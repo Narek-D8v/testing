@@ -39,7 +39,7 @@ async def handler(event):
         # Безопасная проверка: существует ли отправитель и не бот ли он
         # getattr(sender, 'bot', False) защищает от ошибок, если поле отсутствует
         if sender and not getattr(sender, 'bot', False):
-            await event.reply('Привет! Я сейчас занят, отвечу позже.')
+            await event.reply('Привет! Я его автоответчик, он сейчас занят, ответит позже.😘')
 
 if __name__ == "__main__":
     # Запускаем веб-сервер
