@@ -2,11 +2,13 @@ import os
 import logging
 import datetime
 import asyncio
+import random
 from telethon import TelegramClient, events
 from telethon.tl.types import InputMediaDice
 from flask import Flask
 from threading import Thread
 
+# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
 api_id = os.environ.get('API_ID')
@@ -114,7 +116,6 @@ async def c17(e):
 
 @client.on(events.NewMessage(pattern='/rand', from_users='me'))
 async def c18(e):
-    import random
     await e.edit(f'🎲 Случайное число: {random.randint(1, 100)}')
 
 @client.on(events.NewMessage(pattern='/remind', from_users='me'))
@@ -130,7 +131,8 @@ async def c20(e):
         await msg.delete()
 
 # --- АВТООТВЕТЧИК ---
-@client.on(events.NewMessage(incoming=True, private=True))
+# Теперь игнорирует каналы и отвечает только в личке
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handler(event):
     global auto_reply_enabled
     if auto_reply_enabled:
