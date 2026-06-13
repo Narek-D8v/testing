@@ -2,9 +2,11 @@ import os
 import logging
 import datetime
 from telethon import TelegramClient, events
+from telethon.tl.types import InputMediaDice
 from flask import Flask
 from threading import Thread
 
+# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
 api_id = os.environ.get('API_ID')
@@ -22,7 +24,7 @@ def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- 15 КОМАНД УПРАВЛЕНИЯ ---
+# --- 15 КОМАНД ---
 
 @client.on(events.NewMessage(pattern='/sleep', from_users='me'))
 async def c1(e):
@@ -72,7 +74,6 @@ async def c9(e):
 async def c10(e):
     await e.edit('Список: /sleep, /wake, /status, /time, /ping, /id, /clear, /info, /restart, /help, /me, /spam, /type, /dice, /calc')
 
-# Новые 5 команд:
 @client.on(events.NewMessage(pattern='/me', from_users='me'))
 async def c11(e):
     me = await client.get_me()
@@ -95,7 +96,8 @@ async def c13(e):
 
 @client.on(events.NewMessage(pattern='/dice', from_users='me'))
 async def c14(e):
-    await e.respond(file='dice')
+    await e.delete()
+    await e.client.send_message(e.chat_id, file=InputMediaDice(emoticon='🎲'))
 
 @client.on(events.NewMessage(pattern='/calc', from_users='me'))
 async def c15(e):
@@ -105,7 +107,7 @@ async def c15(e):
     except:
         await e.edit('❌ Ошибка в расчетах')
 
-# --- ОБРАБОТЧИК ---
+# --- АВТООТВЕТЧИК ---
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
