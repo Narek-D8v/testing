@@ -25,7 +25,7 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 # Команды управления ботом
-@client.on(events.NewMessage(pattern='/sleep', from_users='me'))
+@client.on(events.NewMessage(pattern='/sleep'))
 async def enable_auto(event):
     global auto_reply_enabled
     auto_reply_enabled = True
