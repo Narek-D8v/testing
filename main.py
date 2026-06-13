@@ -1,20 +1,23 @@
 import os
+import logging
 from telethon import TelegramClient, events
 from flask import Flask
 from threading import Thread
 
-# Берем данные из настроек Render (Environment Variables)
+# Настройка логов, чтобы видеть, что происходит
+logging.basicConfig(level=logging.INFO)
+
+# Получаем данные из настроек Render (Environment Variables)
 api_id = os.environ.get('API_ID')
 api_hash = os.environ.get('API_HASH')
+phone = os.environ.get('PHONE')
 
-if not api_id or not api_hash:
-    raise ValueError("Не найдены API_ID или API_HASH!")
-
-# Создаем клиента
+# Имя файла сессии (создастся локально как my_userbot.session)
 client = TelegramClient('my_userbot', int(api_id), api_hash)
 
-# Веб-сервер для того, чтобы Render не усыплял бота
+# Flask сервер для "пингов" от UptimeRobot
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Бот работает!"
@@ -30,8 +33,11 @@ async def handler(event):
         await event.reply('Привет! Я сейчас занят, отвечу позже.')
 
 if __name__ == "__main__":
-    # Запускаем веб-часть в фоне
+    # Запускаем веб-часть
     Thread(target=run_web).start()
+    
     # Запускаем бота
-    client.start()
+    print("Запуск клиента...")
+    client.start(phone=phone)
+    print("Бот успешно запущен!")
     client.run_until_disconnected()
