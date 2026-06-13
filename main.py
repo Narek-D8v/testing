@@ -1,12 +1,12 @@
 import os
 import logging
 import datetime
+import asyncio
 from telethon import TelegramClient, events
 from telethon.tl.types import InputMediaDice
 from flask import Flask
 from threading import Thread
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
 api_id = os.environ.get('API_ID')
@@ -24,7 +24,7 @@ def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- 15 КОМАНД ---
+# --- 20 КОМАНД ---
 
 @client.on(events.NewMessage(pattern='/sleep', from_users='me'))
 async def c1(e):
@@ -72,7 +72,7 @@ async def c9(e):
 
 @client.on(events.NewMessage(pattern='/help', from_users='me'))
 async def c10(e):
-    await e.edit('Список: /sleep, /wake, /status, /time, /ping, /id, /clear, /info, /restart, /help, /me, /spam, /type, /dice, /calc')
+    await e.edit('Команды: /sleep, /wake, /status, /time, /ping, /id, /clear, /info, /restart, /help, /me, /spam, /type, /dice, /calc, /vol, /search, /rand, /remind, /purge')
 
 @client.on(events.NewMessage(pattern='/me', from_users='me'))
 async def c11(e):
@@ -83,8 +83,7 @@ async def c11(e):
 async def c12(e):
     args = e.text.split()
     count = int(args[1]) if len(args) > 1 else 3
-    for _ in range(count):
-        await e.respond('🤖 Спам-тест')
+    for _ in range(count): await e.respond('🤖 Спам-тест')
 
 @client.on(events.NewMessage(pattern='/type', from_users='me'))
 async def c13(e):
@@ -101,18 +100,40 @@ async def c14(e):
 
 @client.on(events.NewMessage(pattern='/calc', from_users='me'))
 async def c15(e):
-    expr = e.text.replace('/calc ', '')
-    try:
-        await e.edit(f'🧮 {expr} = {eval(expr)}')
-    except:
-        await e.edit('❌ Ошибка в расчетах')
+    try: await e.edit(f'🧮 Результат: {eval(e.text.replace("/calc ", ""))}')
+    except: await e.edit('❌ Ошибка')
+
+@client.on(events.NewMessage(pattern='/vol', from_users='me'))
+async def c16(e):
+    await e.edit('🔊 Громкость установлена на 100%')
+
+@client.on(events.NewMessage(pattern='/search', from_users='me'))
+async def c17(e):
+    query = e.text.replace('/search ', '')
+    await e.edit(f'🔍 Ищу: {query}...\nhttps://google.com/search?q={query.replace(" ", "+")}')
+
+@client.on(events.NewMessage(pattern='/rand', from_users='me'))
+async def c18(e):
+    import random
+    await e.edit(f'🎲 Случайное число: {random.randint(1, 100)}')
+
+@client.on(events.NewMessage(pattern='/remind', from_users='me'))
+async def c19(e):
+    await e.edit('⏰ Напоминание установлено (через 1 минуту)')
+    await asyncio.sleep(60)
+    await e.respond('🔔 Напоминание сработало!')
+
+@client.on(events.NewMessage(pattern='/purge', from_users='me'))
+async def c20(e):
+    await e.delete()
+    async for msg in client.iter_messages(e.chat_id, limit=10):
+        await msg.delete()
 
 # --- АВТООТВЕТЧИК ---
-
-@client.on(events.NewMessage(incoming=True))
+@client.on(events.NewMessage(incoming=True, private=True))
 async def handler(event):
     global auto_reply_enabled
-    if auto_reply_enabled and event.is_private:
+    if auto_reply_enabled:
         sender = await event.get_sender()
         if sender and not getattr(sender, 'bot', False):
             await event.reply('Привет! Я его автоответчик и он сейчас занят, ответит позже.😘')
