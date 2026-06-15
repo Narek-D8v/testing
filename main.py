@@ -36,7 +36,19 @@ def save_data():
 
 load_data()
 
-client = TelegramClient('my_userbot', int(api_id), api_hash)
+# Исправление для Python 3.14
+try:
+    client = TelegramClient('my_userbot', int(api_id), api_hash)
+except ValueError as e:
+    if "too many values to unpack" in str(e):
+        # fallback для новых версий Python
+        from telethon.sessions import SQLiteSession
+        import sqlite3
+        session = SQLiteSession('my_userbot')
+        client = TelegramClient(session, int(api_id), api_hash)
+    else:
+        raise
+
 app = Flask(__name__)
 
 # Rate limiting для автоответчика
@@ -56,7 +68,6 @@ def run_web():
 async def safe_eval(expr: str):
     """Безопасный eval только для математических выражений"""
     expr = expr.strip()
-    # Разрешённые символы и функции
     allowed_chars = set("0123456789+-*/().% ")
     allowed_funcs = {'sqrt': math.sqrt, 'sin': math.sin, 'cos': math.cos, 
                      'tan': math.tan, 'log': math.log, 'abs': abs, 'pow': pow}
@@ -64,7 +75,6 @@ async def safe_eval(expr: str):
     if not all(c in allowed_chars for c in expr):
         return None
     
-    # Безопасное выполнение через ограниченный namespace
     namespace = {'__builtins__': {}, 'math': math}
     namespace.update(allowed_funcs)
     
@@ -79,7 +89,7 @@ async def send_reminder(chat_id, message, delay):
     await asyncio.sleep(delay)
     await client.send_message(chat_id, f"⏰ НАПОМИНАНИЕ:\n{message}")
 
-# --- КОМАНДЫ (35+) ---
+# --- КОМАНДЫ ---
 
 @client.on(events.NewMessage(pattern='/start', from_users='me'))
 async def start_cmd(e):
@@ -102,8 +112,7 @@ async def wake_cmd(e):
 @client.on(events.NewMessage(pattern='/status', from_users='me'))
 async def status_cmd(e):
     reply_status = "💤 Включен" if auto_reply_enabled else "☀️ Выключен"
-    uptime = "Работает с момента запуска"
-    await e.edit(f'📊 Статус бота:\n• Автоответчик: {reply_status}\n• {uptime}')
+    await e.edit(f'📊 Статус бота:\n• Автоответчик: {reply_status}')
 
 @client.on(events.NewMessage(pattern='/time', from_users='me'))
 async def time_cmd(e):
@@ -148,7 +157,6 @@ async def info_cmd(e):
                  f"👤 Имя: {me.first_name}\n"
                  f"🆔 ID: `{me.id}`\n"
                  f"💬 Чатов: {len(dialogs)}\n"
-                 f"📱 Версия: 2.0\n"
                  f"⚡ Статус: Активен")
 
 @client.on(events.NewMessage(pattern='/restart', from_users='me'))
@@ -168,7 +176,7 @@ async def help_cmd(e):
 /status — Статус бота
 /time — Текущее время
 /ping — Проверка задержки
-/id — ID чата/пользователя
+/id — ID чата/пользователя (ответом)
 /clear — Удалить сообщение (ответом)
 /info — Информация о боте
 /restart — Перезапуск
@@ -188,26 +196,32 @@ async def help_cmd(e):
 /coin — Орел/решка
 /rand [min] [max] — Случайное число
 /8ball — Магический шар
+/type [текст] — Эффект печати (без ограничений)
 
 **Утилиты:**
 /calc [выражение] — Калькулятор
-/remind [время] [текст] — Напоминание
+/remind [сек] [текст] — Напоминание
 /search [запрос] — Поиск в Google
 /shorten [url] — Сократить ссылку
 /weather [город] — Погода
 /translate [текст] — Перевод (RU↔EN)
 
-**Администрирование (осторожно):**
-/purge [n] — Удалить n своих сообщений
-/spam [n] [текст] — Отправить n сообщений
+**Управление сообщениями:**
+/clean [n] — Удалить **свои** последние n сообщений (max 100)
+/purge [n] — Удалить **любые** последние n сообщений ⚠️ (max 50)
+/spam [n] [текст] — Отправить n сообщений (max 20)
+
+**Другое:**
 /echo [текст] — Повторить текст
 /say [текст] — Сказать от имени бота
-
-**Специальные:**
 /save [ключ] [значение] — Сохранить текст
 /get [ключ] — Получить сохранённое
-/type [текст] — Эффект печати
-/calc — Безопасный калькулятор"""
+
+⚠️ **Ограничения:**
+• /purge — удаляет любые сообщения (включая чужие)
+• /spam — максимум 20 сообщений за раз
+• /clean — максимум 100 своих сообщений
+• /remind — максимальная задержка 3600 сек (1 час)"""
     await e.edit(help_text)
 
 @client.on(events.NewMessage(pattern='/me', from_users='me'))
@@ -215,8 +229,7 @@ async def me_cmd(e):
     me = await client.get_me()
     await e.edit(f"👤 **{me.first_name}**\n"
                  f"🆔 ID: `{me.id}`\n"
-                 f"🔰 @{me.username if me.username else 'Нет'}\n"
-                 f"📱 {'Премиум' if me.premium else 'Обычный'} аккаунт")
+                 f"🔰 @{me.username if me.username else 'Нет'}")
 
 @client.on(events.NewMessage(pattern='/avatar', from_users='me'))
 async def avatar_cmd(e):
@@ -312,11 +325,11 @@ async def calc_cmd(e):
 async def remind_cmd(e):
     args = e.text.split(maxsplit=2)
     if len(args) < 3:
-        await e.edit("ℹ️ Использование: /remind [время в сек] [текст]\nПример: /remind 60 Позвонить маме")
+        await e.edit("ℹ️ Использование: /remind [время в сек] [текст]\nПример: /remind 60 Позвонить маме\nМаксимум: 3600 сек (1 час)")
         return
     
     try:
-        delay = int(args[1])
+        delay = min(int(args[1]), 3600)
         text = args[2]
         await e.edit(f"⏰ Напоминание установлено на {delay} секунд\n📝 {text}")
         asyncio.create_task(send_reminder(e.chat_id, text, delay))
@@ -413,11 +426,12 @@ async def type_cmd(e):
         await asyncio.sleep(0.05)
     await msg.edit(text)
 
-@client.on(events.NewMessage(pattern='/purge', from_users='me'))
-async def purge_cmd(e):
+# НОВАЯ КОМАНДА: /clean - удаляет ТОЛЬКО свои сообщения
+@client.on(events.NewMessage(pattern='/clean', from_users='me'))
+async def clean_cmd(e):
     args = e.text.split()
     limit = int(args[1]) if len(args) > 1 else 10
-    limit = min(limit, 50)  # Максимум 50 сообщений
+    limit = min(limit, 100)  # Ограничение 100 сообщений
     
     my_id = (await client.get_me()).id
     await e.delete()
@@ -427,10 +441,29 @@ async def purge_cmd(e):
         if msg.out or (msg.from_id and getattr(msg.from_id, 'user_id', None) == my_id):
             await msg.delete()
             count += 1
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
     
-    info = await client.send_message(e.chat_id, f"✅ Удалено {count} сообщений")
+    info = await client.send_message(e.chat_id, f"✅ Удалено {count} своих сообщений")
     await asyncio.sleep(2)
+    await info.delete()
+
+# ОБНОВЛЁННЫЙ /purge - без ограничений, удаляет ЛЮБЫЕ сообщения
+@client.on(events.NewMessage(pattern='/purge', from_users='me'))
+async def purge_cmd(e):
+    args = e.text.split()
+    limit = int(args[1]) if len(args) > 1 else 10
+    limit = min(limit, 50)  # Только ограничение безопасности (чтобы не сломать бота)
+    
+    await e.delete()
+    
+    count = 0
+    async for msg in client.iter_messages(e.chat_id, limit=limit):
+        await msg.delete()
+        count += 1
+        await asyncio.sleep(0.3)
+    
+    info = await client.send_message(e.chat_id, f"⚠️ Удалено {count} любых сообщений (включая чужие)")
+    await asyncio.sleep(3)
     await info.delete()
 
 @client.on(events.NewMessage(pattern='/save', from_users='me'))
@@ -472,7 +505,7 @@ async def get_cmd(e):
     else:
         await e.edit("❌ Нет сохранённых данных")
 
-# --- АВТООТВЕТЧИК (с защитой от спама) ---
+# --- АВТООТВЕТЧИК ---
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def auto_reply_handler(event):
     global auto_reply_enabled
@@ -487,12 +520,11 @@ async def auto_reply_handler(event):
     user_id = event.sender_id
     now = datetime.datetime.now().timestamp()
     
-    # Защита от флуда: не чаще 1 раза в 10 секунд на пользователя
     if now - reply_cooldown[user_id] < 10:
         return
     
     reply_cooldown[user_id] = now
-    await asyncio.sleep(1)  # Минимальная задержка
+    await asyncio.sleep(1)
     await event.reply('💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘')
 
 if __name__ == "__main__":
