@@ -207,9 +207,9 @@ async def help_cmd(e):
 /translate [текст] — Перевод (RU↔EN)
 
 **Управление сообщениями:**
-/clean [n] — Удалить **свои** последние n сообщений (max 100)
-/purge [n] — Удалить **любые** последние n сообщений ⚠️ (max 50)
-/spam [n] [текст] — Отправить n сообщений (max 20)
+/clean [n] — Удалить **свои** последние n сообщений (макс 100)
+/purge [n] — Удалить **ЛЮБЫЕ** последние n сообщений (БЕЗ ОГРАНИЧЕНИЙ) ⚠️
+/spam [n] [текст] — Отправить n сообщений (макс 20)
 
 **Другое:**
 /echo [текст] — Повторить текст
@@ -217,11 +217,10 @@ async def help_cmd(e):
 /save [ключ] [значение] — Сохранить текст
 /get [ключ] — Получить сохранённое
 
-⚠️ **Ограничения:**
-• /purge — удаляет любые сообщения (включая чужие)
-• /spam — максимум 20 сообщений за раз
-• /clean — максимум 100 своих сообщений
-• /remind — максимальная задержка 3600 сек (1 час)"""
+⚠️ **ВНИМАНИЕ:**
+• /purge удаляет ВСЕ сообщения подряд (свои, чужие, любые)
+• Нет ограничений на количество в /purge
+• Используйте осторожно!"""
     await e.edit(help_text)
 
 @client.on(events.NewMessage(pattern='/me', from_users='me'))
@@ -426,12 +425,12 @@ async def type_cmd(e):
         await asyncio.sleep(0.05)
     await msg.edit(text)
 
-# НОВАЯ КОМАНДА: /clean - удаляет ТОЛЬКО свои сообщения
+# /clean - удаляет ТОЛЬКО свои сообщения (с ограничением 100)
 @client.on(events.NewMessage(pattern='/clean', from_users='me'))
 async def clean_cmd(e):
     args = e.text.split()
     limit = int(args[1]) if len(args) > 1 else 10
-    limit = min(limit, 100)  # Ограничение 100 сообщений
+    limit = min(limit, 100)  # Только для своих сообщений ограничение
     
     my_id = (await client.get_me()).id
     await e.delete()
@@ -447,12 +446,12 @@ async def clean_cmd(e):
     await asyncio.sleep(2)
     await info.delete()
 
-# ОБНОВЛЁННЫЙ /purge - без ограничений, удаляет ЛЮБЫЕ сообщения
+# /purge - ПОЛНОСТЬЮ БЕЗ ОГРАНИЧЕНИЙ, удаляет ЛЮБЫЕ сообщения
 @client.on(events.NewMessage(pattern='/purge', from_users='me'))
 async def purge_cmd(e):
     args = e.text.split()
     limit = int(args[1]) if len(args) > 1 else 10
-    limit = min(limit, 50)  # Только ограничение безопасности (чтобы не сломать бота)
+    # НЕТ ОГРАНИЧЕНИЙ - удалит сколько скажешь
     
     await e.delete()
     
@@ -460,9 +459,9 @@ async def purge_cmd(e):
     async for msg in client.iter_messages(e.chat_id, limit=limit):
         await msg.delete()
         count += 1
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.1)  # Только защита от flood wait
     
-    info = await client.send_message(e.chat_id, f"⚠️ Удалено {count} любых сообщений (включая чужие)")
+    info = await client.send_message(e.chat_id, f"⚠️ УДАЛЕНО {count} ЛЮБЫХ сообщений (включая чужие)")
     await asyncio.sleep(3)
     await info.delete()
 
