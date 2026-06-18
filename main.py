@@ -1447,7 +1447,7 @@ async def incoming_handler(event):
 # ════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🚀 Запуск UserBot (71 команда)...")
+    print("🚀 Запуск UserBot (70+ команд)...")
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ UserBot запущен!")
