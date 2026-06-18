@@ -1383,16 +1383,17 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    # Без аргументов → выводим компактный список всех команд
-    lines = ["📚 **Все команды UserBot** (копируйте блок целиком)\n", "```"]
+    # Без аргументов → выводим список команд с переносом каждой на новую строку
+    lines = ["📚 **Все команды UserBot**\n"]
+    emoji_map = {
+        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+    }
     for category, cmds in COMMANDS_LIST.items():
-        emoji_map = {
-            'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
-            'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
-        }
         emoji = emoji_map.get(category, '•')
-        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
-    lines.append("```")
+        lines.append(f"\n{emoji} **{category.capitalize()}**:")
+        for cmd in cmds:
+            lines.append(f"   {cmd}")
     lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
     await e.edit("\n".join(lines))
     bump_stat('cmds')
@@ -1400,15 +1401,16 @@ async def help_cmd(e):
 # ─── Команда /commands (полный синоним /help без аргументов) ──
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
-    lines = ["📚 **Все команды UserBot** (копируйте блок целиком)\n", "```"]
+    lines = ["📚 **Все команды UserBot**\n"]
+    emoji_map = {
+        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+    }
     for category, cmds in COMMANDS_LIST.items():
-        emoji_map = {
-            'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
-            'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
-        }
         emoji = emoji_map.get(category, '•')
-        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
-    lines.append("```")
+        lines.append(f"\n{emoji} **{category.capitalize()}**:")
+        for cmd in cmds:
+            lines.append(f"   {cmd}")
     lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
     await e.edit("\n".join(lines))
     bump_stat('cmds')
@@ -1447,4 +1449,4 @@ if __name__ == "__main__":
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ UserBot запущен!")
-    client.run_until_disconnected() 
+    client.run_until_disconnected()
