@@ -1241,10 +1241,10 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. ПОЛНАЯ СПРАВКА (компактный список + подробные категории)
+# 10. ПОЛНАЯ СПРАВКА (простой список команд для копирования)
 # ════════════════════════════════════════════════════════════
 
-# Словарь команд по категориям (только имена)
+# Словарь команд по категориям (для внутреннего использования)
 COMMANDS_LIST = {
     'основные': [
         '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
@@ -1383,35 +1383,25 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    # Без аргументов → выводим список команд с переносом каждой на новую строку
-    lines = ["📚 **Все команды UserBot**\n"]
-    emoji_map = {
-        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
-        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
-    }
-    for category, cmds in COMMANDS_LIST.items():
-        emoji = emoji_map.get(category, '•')
-        lines.append(f"\n{emoji} **{category.capitalize()}**:")
-        for cmd in cmds:
-            lines.append(f"   {cmd}")
-    lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
+    # Без аргументов → простой список всех команд по одной на строке
+    all_cmds = []
+    for cmds in COMMANDS_LIST.values():
+        all_cmds.extend(cmds)
+    lines = ["📋 **Все команды UserBot** (копируйте нужную):\n"]
+    lines.extend(all_cmds)
+    lines.append("\nℹ️ Подробности: `/help категория`")
     await e.edit("\n".join(lines))
     bump_stat('cmds')
 
 # ─── Команда /commands (полный синоним /help без аргументов) ──
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
-    lines = ["📚 **Все команды UserBot**\n"]
-    emoji_map = {
-        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
-        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
-    }
-    for category, cmds in COMMANDS_LIST.items():
-        emoji = emoji_map.get(category, '•')
-        lines.append(f"\n{emoji} **{category.capitalize()}**:")
-        for cmd in cmds:
-            lines.append(f"   {cmd}")
-    lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
+    all_cmds = []
+    for cmds in COMMANDS_LIST.values():
+        all_cmds.extend(cmds)
+    lines = ["📋 **Все команды UserBot** (копируйте нужную):\n"]
+    lines.extend(all_cmds)
+    lines.append("\nℹ️ Подробности: `/help категория`")
     await e.edit("\n".join(lines))
     bump_stat('cmds')
 
