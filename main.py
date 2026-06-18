@@ -19,9 +19,9 @@ from telethon import TelegramClient, events, utils
 from telethon.tl.types import (
     InputMediaDice, MessageEntityMentionName,
     ChannelParticipantsAdmins, ChannelParticipantsBots,
-    ReactionEmoji,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    ReactionEmoji
 )
+from telethon.tl.custom import Button  # <-- Импортируем Button для создания кнопок
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
@@ -1242,7 +1242,7 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. КОМАНДЫ СПРАВКИ С КНОПКАМИ
+# 10. КОМАНДЫ СПРАВКИ С КНОПКАМИ (исправлен импорт Button)
 # ════════════════════════════════════════════════════════════
 
 # Словарь команд по категориям (для внутреннего использования)
@@ -1382,22 +1382,19 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    # Собираем все команды (без дублей)
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
 
-    # Создаём кнопки: каждая команда – кнопка с вставкой в поле ввода
-    buttons = [InlineKeyboardButton(cmd, switch_inline_query_current_chat=cmd) for cmd in all_cmds]
-    # Разбиваем на ряды по 4 кнопки
+    # Создаём кнопки с помощью Button.switch_inline
+    buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
     rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-    markup = InlineKeyboardMarkup(rows)
 
     await e.edit(
         "📋 **Все команды UserBot**\n"
         "Нажмите на команду → она вставится в поле ввода.\n\n"
         "ℹ️ Подробности: `/help категория`",
-        buttons=markup
+        buttons=rows
     )
     bump_stat('cmds')
 
@@ -1406,14 +1403,13 @@ async def commands_cmd(e):
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
-    buttons = [InlineKeyboardButton(cmd, switch_inline_query_current_chat=cmd) for cmd in all_cmds]
+    buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
     rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-    markup = InlineKeyboardMarkup(rows)
     await e.edit(
         "📋 **Все команды UserBot**\n"
         "Нажмите на команду → она вставится в поле ввода.\n\n"
         "ℹ️ Подробности: `/help категория`",
-        buttons=markup
+        buttons=rows
     )
     bump_stat('cmds')
 
@@ -1447,7 +1443,7 @@ async def incoming_handler(event):
 # ════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🚀 Запуск UserBot (70+ команд)...")
+    print("🚀 Запуск UserBot (71 команда)...")
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ UserBot запущен!")
