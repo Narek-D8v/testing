@@ -10,93 +10,110 @@ import time
 import hashlib
 import base64
 import string
-import io
-import cmath
+import uuid
+import aiohttp
 from collections import defaultdict
+from functools import wraps
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
 from telethon.tl.types import (
-    InputMediaDice, ChannelParticipantsAdmins, ChannelParticipantsBots,
+    InputMediaDice, MessageEntityMentionName,
+    ChannelParticipantsAdmins, ChannelParticipantsBots,
     ReactionEmoji
 )
-from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
+from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
 from threading import Thread
 
-# === Конфигурация ===
 logging.basicConfig(level=logging.INFO)
-api_id  = os.environ.get('API_ID')
-api_hash = os.environ.get('API_HASH')
+logger = logging.getLogger(__name__)
 
-# === Глобальные переменные ===
-auto_reply_enabled = False
-auto_reply_text    = '💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘'
-afk_start_time     = None
-afk_reason         = ""
-ghost_mode         = False
-data_file          = 'userbot_data.json'
-saved_file         = 'saved_data.json'
-notes_file         = 'notes_data.json'
-todos_file         = 'todos_data.json'
-stats_file         = 'stats_data.json'
-MY_ID              = None
+# ─── Конфигурация ──────────────────────────────────────────
+API_ID  = os.environ.get('API_ID')
+API_HASH = os.environ.get('API_HASH')
+PORT = int(os.environ.get('PORT', 8080))
 
-# === Загрузка/сохранение ===
-def load_data():
-    global auto_reply_enabled, auto_reply_text, ghost_mode
-    if os.path.exists(data_file):
-        with open(data_file, 'r', encoding='utf-8') as f:
-            d = json.load(f)
-            auto_reply_enabled = d.get('auto_reply_enabled', False)
-            auto_reply_text    = d.get('auto_reply_text', auto_reply_text)
-            ghost_mode         = d.get('ghost_mode', False)
+DATA_FILE  = 'userbot_data.json'
+SAVED_FILE = 'saved_data.json'
+NOTES_FILE = 'notes_data.json'
+TODOS_FILE = 'todos_data.json'
+STATS_FILE = 'stats_data.json'
 
-def save_data():
-    with open(data_file, 'w', encoding='utf-8') as f:
-        json.dump({'auto_reply_enabled': auto_reply_enabled,
-                   'auto_reply_text': auto_reply_text,
-                   'ghost_mode': ghost_mode}, f, ensure_ascii=False)
+# ─── Класс для управления состоянием бота ────────────────
+class BotState:
+    def __init__(self):
+        self.auto_reply_enabled = False
+        self.auto_reply_text = '💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘'
+        self.ghost_mode = False
+        self.afk_start_time = None
+        self.afk_reason = ''
+        self.bot_start_time = time.time()
+        self._load()
 
-def _load(path):
-    return json.load(open(path, encoding='utf-8')) if os.path.exists(path) else {}
+    def _load(self):
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                    self.auto_reply_enabled = d.get('auto_reply_enabled', False)
+                    self.auto_reply_text    = d.get('auto_reply_text', self.auto_reply_text)
+                    self.ghost_mode         = d.get('ghost_mode', False)
+                    self.afk_start_time     = d.get('afk_start_time', None)
+                    self.afk_reason         = d.get('afk_reason', '')
+            except Exception as e:
+                logger.error(f"Ошибка загрузки состояния: {e}")
 
-def _write(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
+    def save(self):
+        try:
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'auto_reply_enabled': self.auto_reply_enabled,
+                    'auto_reply_text': self.auto_reply_text,
+                    'ghost_mode': self.ghost_mode,
+                    'afk_start_time': self.afk_start_time,
+                    'afk_reason': self.afk_reason
+                }, f, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
 
-def load_todos():
-    return json.load(open(todos_file, encoding='utf-8')) if os.path.exists(todos_file) else []
+    def toggle_auto_reply(self, state=None):
+        if state is None:
+            self.auto_reply_enabled = not self.auto_reply_enabled
+        else:
+            self.auto_reply_enabled = state
+        self.save()
 
-def write_todos(lst):
-    with open(todos_file, 'w', encoding='utf-8') as f:
-        json.dump(lst, f, ensure_ascii=False)
+    def set_auto_reply_text(self, text):
+        self.auto_reply_text = text
+        self.save()
 
-def bump_stat(key, n=1):
-    s = _load(stats_file)
-    s[key] = s.get(key, 0) + n
-    _write(stats_file, s)
+    def toggle_ghost(self, state=None):
+        if state is None:
+            self.ghost_mode = not self.ghost_mode
+        else:
+            self.ghost_mode = state
+        self.save()
 
-load_data()
+    def set_afk(self, reason=''):
+        self.afk_start_time = time.time()
+        self.afk_reason = reason
+        self.save()
 
-# === Клиент Telethon ===
-try:
-    client = TelegramClient('my_userbot', int(api_id), api_hash)
-except ValueError:
-    from telethon.sessions import SQLiteSession
-    client = TelegramClient(SQLiteSession('my_userbot'), int(api_id), api_hash)
+    def clear_afk(self):
+        duration = None
+        if self.afk_start_time:
+            duration = time.time() - self.afk_start_time
+        self.afk_start_time = None
+        self.afk_reason = ''
+        self.save()
+        return duration
 
-# === Flask для веб-прокси ===
-app = Flask(__name__)
-reply_cooldown = defaultdict(float)
+    @property
+    def uptime(self):
+        return fmt_time(time.time() - self.bot_start_time)
 
-@app.route('/')
-def home():
-    return "🤖 UserBot работает 24/7!"
-
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-# === Вспомогательные функции ===
+# ─── Вспомогательные функции ──────────────────────────────
 def fmt_time(s):
     s = int(s)
     d, s = divmod(s, 86400)
@@ -113,95 +130,131 @@ def progress_bar(val, mx, width=10):
     filled = int(width * val / max(mx, 1))
     return "█" * filled + "░" * (width - filled)
 
-def parse_time(text):
-    text = text.lower().strip()
-    if 'через' in text:
-        parts = text.split('через')[-1].strip().split()
-        if len(parts) >= 2:
-            try:
-                num = int(parts[0])
-                unit = parts[1][0]
-                if unit in 'mмин': return num * 60
-                elif unit in 'hч': return num * 3600
-                elif unit in 'dд': return num * 86400
-                elif unit in 'sс': return num
-            except: pass
-    match = re.match(r'^(\d+)([mhds])$', text)
-    if match:
-        num, unit = int(match.group(1)), match.group(2)
-        if unit == 'm': return num * 60
-        elif unit == 'h': return num * 3600
-        elif unit == 'd': return num * 86400
-        elif unit == 's': return num
-    nums = re.findall(r'\d+', text)
-    units = re.findall(r'[mhds]', text)
-    if nums and units:
+def load_json(path, default=None):
+    if default is None:
+        default = {} if not path.endswith('todos') else []
+    if os.path.exists(path):
         try:
-            num = int(nums[0]); unit = units[0]
-            if unit == 'm': return num * 60
-            elif unit == 'h': return num * 3600
-            elif unit == 'd': return num * 86400
-            elif unit == 's': return num
-        except: pass
-    return None
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return default
+    return default
 
-async def send_reminder(chat_id, msg, delay):
-    await asyncio.sleep(delay)
-    await client.send_message(chat_id, f"⏰ **НАПОМИНАНИЕ:**\n{msg}")
+def write_json(path, data):
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка записи {path}: {e}")
 
-bot_start = time.time()
+# ─── Менеджер команд с защитой от флуда ────────────────────
+command_cooldown = defaultdict(float)
+COOLDOWN_SEC = 1.5  # минимальный интервал между командами одного пользователя
 
-def is_me(event):
-    return event.sender_id == MY_ID
+def command_handler(pattern, from_me=True, cooldown=COOLDOWN_SEC):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(event):
+            # Проверка, что команда от владельца
+            if from_me:
+                me = await event.client.get_me()
+                if event.sender_id != me.id:
+                    return
 
-# ============================================================
-# 1. ОСНОВНЫЕ КОМАНДЫ (все используют e.edit)
-# ============================================================
+            # Ghost-режим: удаляем команду сразу, но выполняем
+            if state.ghost_mode:
+                await event.delete()
 
-@client.on(events.NewMessage(pattern=r'/sleep$', func=is_me))
+            # Защита от флуда
+            uid = event.sender_id
+            now = time.time()
+            if now - command_cooldown.get(uid, 0) < cooldown:
+                # Можно проигнорировать или ответить предупреждением
+                return
+            command_cooldown[uid] = now
+
+            try:
+                await func(event)
+                bump_stat('cmds')
+            except Exception as e:
+                logger.error(f"Ошибка в команде {pattern}: {e}")
+                try:
+                    await event.edit(f"❌ Ошибка: {e}")
+                except:
+                    pass
+        return wrapper
+    return decorator
+
+def bump_stat(key, n=1):
+    d = load_json(STATS_FILE, {})
+    d[key] = d.get(key, 0) + n
+    write_json(STATS_FILE, d)
+
+# ─── Глобальное состояние ──────────────────────────────────
+state = BotState()
+
+# ─── Клиент Telegram ───────────────────────────────────────
+try:
+    client = TelegramClient('my_userbot', int(API_ID), API_HASH)
+except ValueError:
+    from telethon.sessions import SQLiteSession
+    client = TelegramClient(SQLiteSession('my_userbot'), int(API_ID), API_HASH)
+
+# ─── Flask веб-сервер ─────────────────────────────────────
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 UserBot работает 24/7!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=PORT)
+
+# ════════════════════════════════════════════════════════════
+# 1. ОСНОВНЫЕ КОМАНДЫ
+# ════════════════════════════════════════════════════════════
+
+@client.on(events.NewMessage(pattern=r'/sleep$', from_users='me'))
 async def sleep_cmd(e):
-    global auto_reply_enabled
-    auto_reply_enabled = True
-    save_data()
+    state.toggle_auto_reply(True)
     await e.edit('💤 Автоответчик **ВКЛЮЧЕН**.')
 
-@client.on(events.NewMessage(pattern=r'/wake$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/wake$', from_users='me'))
 async def wake_cmd(e):
-    global auto_reply_enabled
-    auto_reply_enabled = False
-    save_data()
+    state.toggle_auto_reply(False)
     await e.edit('☀️ Автоответчик **ВЫКЛЮЧЕН**.')
 
-@client.on(events.NewMessage(pattern=r'/setreply (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/setreply (.+)', from_users='me'))
 async def setreply_cmd(e):
-    global auto_reply_text
-    auto_reply_text = e.pattern_match.group(1).strip()
-    save_data()
-    await e.edit(f"✅ Текст автоответчика:\n_{auto_reply_text}_")
+    text = e.pattern_match.group(1).strip()
+    state.set_auto_reply_text(text)
+    await e.edit(f"✅ Текст автоответчика:\n_{text}_")
 
-@client.on(events.NewMessage(pattern=r'/status$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/status$', from_users='me'))
 async def status_cmd(e):
     me = await client.get_me()
     dialogs = await client.get_dialogs()
-    s = _load(stats_file)
+    s = load_json(STATS_FILE, {})
+    afk_status = f"✅ {state.afk_reason or 'без причины'}" if state.afk_start_time else "❌"
     await e.edit(
         f"📊 **Статус UserBot**\n\n"
         f"👤 {me.first_name} {me.last_name or ''}\n"
         f"💬 Чатов: `{len(dialogs)}`\n"
-        f"🤖 Автоответчик: {'💤 Вкл' if auto_reply_enabled else '☀️ Выкл'}\n"
-        f"👻 Ghost-режим: {'✅' if ghost_mode else '❌'}\n"
-        f"😴 AFK: {'✅ ' + (afk_reason or 'без причины') if afk_start_time else '❌'}\n"
-        f"⏱ Аптайм: `{fmt_time(time.time()-bot_start)}`\n"
+        f"🤖 Автоответчик: {'💤 Вкл' if state.auto_reply_enabled else '☀️ Выкл'}\n"
+        f"👻 Ghost-режим: {'✅' if state.ghost_mode else '❌'}\n"
+        f"😴 AFK: {afk_status}\n"
+        f"⏱ Аптайм: `{state.uptime}`\n"
         f"📨 Команд выполнено: `{s.get('cmds',0)}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/time$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/time$', from_users='me'))
 async def time_cmd(e):
     now = datetime.datetime.now()
     utc = datetime.datetime.utcnow()
     week_days = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
     day_of_year = now.timetuple().tm_yday
-    week_num    = now.isocalendar()[1]
+    week_num = now.isocalendar()[1]
     await e.edit(
         f"🕐 **Время и дата**\n\n"
         f"🏠 Локальное: `{now.strftime('%H:%M:%S')}`\n"
@@ -212,15 +265,15 @@ async def time_cmd(e):
         f"📋 Неделя: `#{week_num}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/ping$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/ping$', from_users='me'))
 async def ping_cmd(e):
     t0 = time.monotonic()
     await e.edit("🏓 ...")
     ms = (time.monotonic() - t0) * 1000
-    q  = "🟢 Отлично" if ms < 150 else "🟡 Нормально" if ms < 400 else "🔴 Высокая"
+    q = "🟢 Отлично" if ms < 150 else "🟡 Нормально" if ms < 400 else "🔴 Высокая"
     await e.edit(f"🏓 **Понг!**\n⚡ Задержка: `{ms:.1f} мс`\n📶 Качество: {q}")
 
-@client.on(events.NewMessage(pattern=r'/id$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/id$', from_users='me'))
 async def id_cmd(e):
     chat = await e.get_chat()
     lines = [f"🆔 **ID чата:** `{chat.id}`"]
@@ -237,7 +290,7 @@ async def id_cmd(e):
         lines.append(f"👤 **Мой ID:** `{me.id}`")
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/info$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/info$', from_users='me'))
 async def info_cmd(e):
     me = await client.get_me()
     dialogs = await client.get_dialogs()
@@ -248,34 +301,32 @@ async def info_cmd(e):
         f"🔰 @{me.username or 'нет'}\n"
         f"📱 Телефон: `{me.phone or 'скрыт'}`\n"
         f"💬 Чатов: `{len(dialogs)}`\n"
-        f"⏱ Аптайм: `{fmt_time(time.time()-bot_start)}`\n"
+        f"⏱ Аптайм: `{state.uptime}`\n"
         f"⚡ Статус: **Активен** ✅"
     )
 
-@client.on(events.NewMessage(pattern=r'/restart$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/restart$', from_users='me'))
 async def restart_cmd(e):
     await e.edit('🔄 Перезагрузка...')
     await asyncio.sleep(2)
     await client.disconnect()
     os._exit(0)
 
-@client.on(events.NewMessage(pattern=r'/ghost$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/ghost$', from_users='me'))
 async def ghost_cmd(e):
-    global ghost_mode
-    ghost_mode = not ghost_mode
-    save_data()
-    if ghost_mode:
+    state.toggle_ghost()
+    if state.ghost_mode:
         await e.edit("👻 **Ghost-режим ВКЛЮЧЁН** — команды удаляются мгновенно")
         await asyncio.sleep(2)
         await e.delete()
     else:
         await e.edit("👁 **Ghost-режим ВЫКЛЮЧЕН**")
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 2. ПРОФИЛЬ
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/me$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/me$', from_users='me'))
 async def me_cmd(e):
     me = await client.get_me()
     photos = await client.get_profile_photos(me.id, limit=1)
@@ -290,7 +341,7 @@ async def me_cmd(e):
         f"🤖 Бот: {'✅' if me.bot else '❌'}"
     )
 
-@client.on(events.NewMessage(pattern=r'/avatar$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/avatar$', from_users='me'))
 async def avatar_cmd(e):
     if e.reply_to_msg_id:
         r = await e.get_reply_message()
@@ -299,40 +350,39 @@ async def avatar_cmd(e):
         uid = (await client.get_me()).id
     photos = await client.get_profile_photos(uid, limit=1)
     if photos:
-        # Отправляем ссылку на аватар (через file_id можно получить прямую ссылку, но проще отправить файл отдельно)
-        # Чтобы остаться в рамках редактирования, отправляем сообщение с файлом, а команду редактируем в уведомление.
-        await e.edit("🖼 Аватар отправлен ниже.")
-        await client.send_file(e.chat_id, photos[0], caption=f"Аватар пользователя `{uid}`")
+        await e.reply(file=photos[0])
+        await e.delete()
     else:
         await e.edit("❌ Аватарка не найдена")
 
-@client.on(events.NewMessage(pattern=r'/name (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/name (.+)', from_users='me'))
 async def name_cmd(e):
     n = e.pattern_match.group(1).strip()
     await client.edit_profile(first_name=n)
     await e.edit(f"✅ Имя → **{n}**")
 
-@client.on(events.NewMessage(pattern=r'/lastname(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/lastname(?:\s+(.+))?$', from_users='me'))
 async def lastname_cmd(e):
     n = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(last_name=n)
     await e.edit(f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
 
-@client.on(events.NewMessage(pattern=r'/bio(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/bio(?:\s+(.+))?$', from_users='me'))
 async def bio_cmd(e):
     t = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(about=t)
     await e.edit(f"✅ Био → _{t}_" if t else "✅ Био очищено")
 
-@client.on(events.NewMessage(pattern=r'/whois (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/whois (.+)', from_users='me'))
 async def whois_cmd(e):
     target = e.pattern_match.group(1).strip().lstrip('@')
     try:
         ent = await client.get_entity(target)
-        name = f"{getattr(ent,'first_name','') or ''} {getattr(ent,'last_name','') or ''}".strip() or getattr(ent,'title','?')
+        name = f"{getattr(ent,'first_name','') or ''} {getattr(ent,'last_name','') or ''}".strip() \
+               or getattr(ent,'title','?')
         uname = f"@{ent.username}" if getattr(ent,'username',None) else "нет"
-        bot_  = "✅" if getattr(ent,'bot',False) else "❌"
-        ver   = "✅" if getattr(ent,'verified',False) else "❌"
+        bot_ = "✅" if getattr(ent,'bot',False) else "❌"
+        ver = "✅" if getattr(ent,'verified',False) else "❌"
         await e.edit(
             f"🔍 **Информация о пользователе**\n\n"
             f"📛 Имя: **{name}**\n"
@@ -344,7 +394,7 @@ async def whois_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ Не найден: {ex}")
 
-@client.on(events.NewMessage(pattern=r'/username_check (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/username_check (.+)', from_users='me'))
 async def username_check_cmd(e):
     uname = e.pattern_match.group(1).strip().lstrip('@')
     try:
@@ -354,48 +404,48 @@ async def username_check_cmd(e):
     except:
         await e.edit(f"🔍 @{uname}\n✅ **Свободен**")
 
-# ============================================================
-# 3. ИГРЫ И РАЗВЛЕЧЕНИЯ (все e.edit)
-# ============================================================
+# ════════════════════════════════════════════════════════════
+# 3. ИГРЫ И РАЗВЛЕЧЕНИЯ
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/dice$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/dice$', from_users='me'))
 async def dice_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎲'))
 
-@client.on(events.NewMessage(pattern=r'/dart$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/dart$', from_users='me'))
 async def dart_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎯'))
 
-@client.on(events.NewMessage(pattern=r'/basket$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/basket$', from_users='me'))
 async def basket_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🏀'))
 
-@client.on(events.NewMessage(pattern=r'/football$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/football$', from_users='me'))
 async def football_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('⚽'))
 
-@client.on(events.NewMessage(pattern=r'/bowling$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/bowling$', from_users='me'))
 async def bowling_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎳'))
 
-@client.on(events.NewMessage(pattern=r'/casino$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/casino$', from_users='me'))
 async def casino_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎰'))
 
-@client.on(events.NewMessage(pattern=r'/coin$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/coin$', from_users='me'))
 async def coin_cmd(e):
     sides = ["Орёл 🦅", "Решка 💰"]
     flips = random.randint(3, 9)
     r = random.choice(sides)
     await e.edit(f"🪙 Монета вращается {flips} раз...\n\nРезультат: **{r}**")
 
-@client.on(events.NewMessage(pattern=r'/rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', from_users='me'))
 async def rand_cmd(e):
     g = e.pattern_match
     a, b = g.group(1), g.group(2)
@@ -407,125 +457,74 @@ async def rand_cmd(e):
     else:
         await e.edit(f"🎲 **{random.randint(1, 100)}**")
 
-# УЛУЧШЕННЫЙ /8ball (с историей, статистикой, анимацией)
-@client.on(events.NewMessage(pattern=r'/8ball(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/8ball(?:\s+(.+))?$', from_users='me'))
 async def eightball_cmd(e):
-    if not hasattr(eightball_cmd, 'history'):
-        eightball_cmd.history = []
-        eightball_cmd.total_asked = 0
-        eightball_cmd.pos_count = 0
-
     ANSWERS = {
         'pos': [
-            ("Определённо да", "✅", "Вселенная согласна с тобой.", "Действуй смело!"),
-            ("Без сомнений", "💯", "Это решено раньше, чем ты спросил.", "Ты уже знаешь путь."),
-            ("Скорее всего да", "👍", "Всё складывается в твою пользу.", "Продолжай в том же духе."),
-            ("Хорошие перспективы", "🌟", "Будущее выглядит светлым.", "Звёзды на твоей стороне."),
-            ("Знаки говорят «да»", "🔮", "Мистические силы на твоей стороне.", "Доверься интуиции."),
-            ("Всё указывает на «да»", "💫", "Судьба уже всё решила.", "Не сомневайся."),
-            ("Да, и поскорее", "🚀", "Не медли — действуй прямо сейчас.", "Время — ключевой фактор."),
-            ("Абсолютно точно", "🏆", "Лучшего ответа не существует.", "Ты победишь."),
-            ("Это неизбежно", "⚡", "Ничто не остановит это.", "Прими как данность."),
-            ("Да, если сделаешь шаг", "🦶", "Действие — ключ к результату.", "Первый шаг уже сделан."),
-            ("Вселенная шепчет: да", "🌌", "Даже звёзды кивают.", "Слушай тишину."),
-            ("Смело иди вперёд", "🎯", "Ты уже знал ответ — я лишь подтверждаю.", "Цель близка."),
-            ("Это твой день", "🌈", "Удача улыбается тебе.", "Лови момент."),
-            ("Да, но будь осторожен", "⚠️", "Успех придёт, но не расслабляйся.", "Держи ухо востро."),
+            ("Определённо да", "✅", "Вселенная согласна с тобой."),
+            ("Без сомнений", "💯", "Это решено раньше, чем ты спросил."),
+            ("Скорее всего да", "👍", "Всё складывается в твою пользу."),
+            ("Хорошие перспективы", "🌟", "Будущее выглядит светлым."),
+            ("Знаки говорят «да»", "🔮", "Мистические силы на твоей стороне."),
+            ("Всё указывает на «да»", "💫", "Судьба уже всё решила."),
+            ("Да, и поскорее", "🚀", "Не медли — действуй прямо сейчас."),
+            ("Абсолютно точно", "🏆", "Лучшего ответа не существует."),
+            ("Это неизбежно", "⚡", "Ничто не остановит это."),
+            ("Да, если сделаешь шаг", "🦶", "Действие — ключ к результату."),
+            ("Вселенная шепчет: да", "🌌", "Даже звёзды кивают."),
+            ("Смело иди вперёд", "🎯", "Ты уже знал ответ — я лишь подтверждаю."),
         ],
         'neu': [
-            ("Пока не ясно", "🤔", "Туман будущего слишком густой.", "Повтори позже."),
-            ("Спроси позже", "⏰", "Момент ещё не настал.", "Терпение — твой союзник."),
-            ("Не могу предсказать", "🌫", "Слишком много переменных.", "Упрости вопрос."),
-            ("Сосредоточься и повтори", "🧘", "Твой разум мешает ответу.", "Медитация поможет."),
-            ("Лучше не рассказывать", "🤫", "Некоторые тайны лучше хранить.", "Не всё нужно знать."),
-            ("Трудно сказать", "😶", "Даже я не всесилен.", "Попробуй спросить иначе."),
-            ("Возможно, но не сейчас", "🌙", "Подожди подходящего момента.", "Всему своё время."),
-            ("Ответ где-то рядом", "🔭", "Смотри внимательнее вокруг себя.", "Знак уже был."),
-            ("Может быть", "🌀", "Вероятность 50 на 50.", "Решай сам."),
-            ("Спроси у друга", "🗣️", "Чужой взгляд поможет.", "Коллективный разум."),
+            ("Пока не ясно", "🤔", "Туман будущего слишком густой."),
+            ("Спроси позже", "⏰", "Момент ещё не настал."),
+            ("Не могу предсказать", "🌫", "Слишком много переменных."),
+            ("Сосредоточься и повтори", "🧘", "Твой разум мешает ответу."),
+            ("Лучше не рассказывать", "🤫", "Некоторые тайны лучше хранить."),
+            ("Трудно сказать", "😶", "Даже я не всесилен."),
+            ("Возможно, но не сейчас", "🌙", "Подожди подходящего момента."),
+            ("Ответ где-то рядом", "🔭", "Смотри внимательнее вокруг себя."),
         ],
         'neg': [
-            ("Мой ответ — нет", "🚫", "Прими это спокойно.", "Пересмотри планы."),
-            ("Перспективы не очень", "😕", "Стоит пересмотреть планы.", "Не рискуй."),
-            ("Весьма сомнительно", "🙄", "Интуиция говорит «осторожно».", "Доверься внутреннему голосу."),
-            ("Точно нет", "💀", "Даже не думай об этом.", "Это тупик."),
-            ("Не рассчитывай", "❌", "Лучше найди другой путь.", "Обойди препятствие."),
-            ("Категорически нет", "🔴", "Вселенная против.", "Не искушай судьбу."),
-            ("Всё против этого", "⛈", "Сейчас не лучшее время.", "Подожди перемен."),
-            ("Откажись от идеи", "🗑", "Это дорога в никуда.", "Сэкономь силы."),
-            ("Шансы ничтожны", "🎰", "Даже удача отвернулась.", "Не трать время."),
-            ("Абсолютное нет", "⛔", "Ответ однозначен.", "Прими и двигайся дальше."),
-            ("Скорее нет, чем да", "📉", "Тенденция негативная.", "Будь реалистом."),
+            ("Мой ответ — нет", "🚫", "Прими это спокойно."),
+            ("Перспективы не очень", "😕", "Стоит пересмотреть планы."),
+            ("Весьма сомнительно", "🙄", "Интуиция говорит «осторожно»."),
+            ("Точно нет", "💀", "Даже не думай об этом."),
+            ("Не рассчитывай", "❌", "Лучше найди другой путь."),
+            ("Категорически нет", "🔴", "Вселенная против."),
+            ("Всё против этого", "⛈", "Сейчас не лучшее время."),
+            ("Откажись от идеи", "🗑", "Это дорога в никуда."),
+            ("Шансы ничтожны", "🎰", "Даже удача отвернулась."),
         ],
-        'sarc': [
-            ("О, да, конечно", "🙄", "Ты серьёзно?", "Шар устал от глупых вопросов."),
-            ("Как скажешь", "😏", "Делай что хочешь.", "Мне всё равно."),
-            ("А ты как думаешь?", "🧐", "Ответ очевиден.", "Включи мозги."),
-            ("Спроси у кота", "🐱", "Он знает лучше.", "Мурлыканье — знак."),
-        ],
-        'mystic': [
-            ("Тень грядущего", "🌑", "Судьба переплетается с прошлым.", "Ищи знаки в воде."),
-            ("Голос из бездны", "🌀", "Древние силы дают ответ.", "Не бойся темноты."),
-            ("Звёзды говорят", "✨", "Космос шепчет тебе.", "Смотри на ночное небо."),
-        ]
     }
 
     question = (e.pattern_match.group(1) or '').strip()
-    if not question:
-        await e.edit("❓ Задай вопрос: `/8ball [твой вопрос]`")
-        return
+    spin = ["🎱", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🎱"]
+    msg = await e.edit("🎱 Шар вращается...")
+    for frame in spin:
+        await msg.edit(f"{frame} Шар вращается...")
+        await asyncio.sleep(0.15)
 
-    spin_frames = ["🎱", "🌑", "🌘", "🌗", "🌖", "🌕", "🌔", "🌓", "🌒", "🌑", "🎱"]
-    await e.edit("🎱 Шар вращается...")
-    for frame in spin_frames:
-        await e.edit(f"{frame}  Шар вращается...")
-        await asyncio.sleep(0.12)
+    pool_key = random.choices(['pos','neu','neg'], weights=[38,27,35])[0]
+    answer, emoji, comment = random.choice(ANSWERS[pool_key])
+    color = {"pos":"🟢","neu":"🟡","neg":"🔴"}[pool_key]
+    label = {"pos":"ПОЗИТИВНЫЙ","neu":"НЕЙТРАЛЬНЫЙ","neg":"НЕГАТИВНЫЙ"}[pool_key]
+    confidence = random.randint(55, 99)
+    bar = progress_bar(confidence, 100, 10)
 
-    pool_weights = {'pos': 35, 'neu': 25, 'neg': 30, 'sarc': 5, 'mystic': 5}
-    pool_key = random.choices(list(pool_weights.keys()), weights=list(pool_weights.values()))[0]
-    answer, emoji, comment, advice = random.choice(ANSWERS[pool_key])
-
-    name_match = re.search(r'\b(?:мне|меня|я)\s+(\w+)', question, re.IGNORECASE)
-    if name_match:
-        name = name_match.group(1)
-        comment = comment.replace('ты', name).replace('тебе', name).replace('твой', f"{name}а" if name.endswith('а') else f"{name}а")
-
-    color = {"pos":"🟢","neu":"🟡","neg":"🔴","sarc":"🟣","mystic":"🔵"}[pool_key]
-    label = {"pos":"ПОЗИТИВНЫЙ","neu":"НЕЙТРАЛЬНЫЙ","neg":"НЕГАТИВНЫЙ","sarc":"САРКАСТИЧНЫЙ","mystic":"МИСТИЧЕСКИЙ"}[pool_key]
-    confidence = random.randint(45, 98)
-    bar = progress_bar(confidence, 100, 12)
-
-    eightball_cmd.total_asked += 1
-    if pool_key == 'pos':
-        eightball_cmd.pos_count += 1
-    eightball_cmd.history.append((question, answer))
-    if len(eightball_cmd.history) > 5:
-        eightball_cmd.history.pop(0)
-
-    reply_text = (
+    q_line = f"❓ _{question}_\n\n" if question else ""
+    await msg.edit(
         f"🎱 **Магический шар**\n\n"
-        f"❓ _{question}_\n\n"
-        f"┌{'─'*22}┐\n"
-        f"│ {emoji}  **{answer}**\n"
-        f"└{'─'*22}┘\n\n"
-        f"💬 _{comment}_\n"
-        f"💡 *{advice}*\n\n"
+        f"{q_line}"
+        f"{'─'*22}\n"
+        f"{emoji}  **{answer}**\n"
+        f"{'─'*22}\n\n"
+        f"💬 _{comment}_\n\n"
         f"{color} {label}\n"
-        f"[{bar}] **{confidence}%** уверенности\n"
-        f"📊 Всего вопросов: {eightball_cmd.total_asked} | "
-        f"Позитивных: {eightball_cmd.pos_count} ({int(eightball_cmd.pos_count/max(1,eightball_cmd.total_asked)*100)}%)"
+        f"[{bar}] **{confidence}%** уверенности"
     )
+    bump_stat('cmds')
 
-    if eightball_cmd.history:
-        hist_lines = ["\n📜 **Последние вопросы:**"]
-        for q, a in eightball_cmd.history[-3:]:
-            hist_lines.append(f"• _{q[:30]}{'…' if len(q)>30 else ''}_ → **{a}**")
-        reply_text += "\n" + "\n".join(hist_lines)
-
-    await e.edit(reply_text)
-    bump_stat('8ball')
-
-@client.on(events.NewMessage(pattern=r'/rps(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/rps(?:\s+(.+))?$', from_users='me'))
 async def rps_cmd(e):
     MAP = {'к':'🪨 Камень','камень':'🪨 Камень','н':'✂️ Ножницы','ножницы':'✂️ Ножницы','б':'📄 Бумага','бумага':'📄 Бумага'}
     BOT = ['🪨 Камень','✂️ Ножницы','📄 Бумага']
@@ -535,29 +534,29 @@ async def rps_cmd(e):
         await e.edit("✊✌️🖐 `/rps камень` / `ножницы` / `бумага` (или `к`/`н`/`б`)")
         return
     uc, bc = MAP[arg], random.choice(BOT)
-    if uc == bc:   res = "🤝 **Ничья!**"
-    elif WIN[uc]==bc: res = "🏆 **Ты победил!**"
-    else:          res = "💀 **Бот победил!**"
+    if uc == bc: res = "🤝 **Ничья!**"
+    elif WIN[uc] == bc: res = "🏆 **Ты победил!**"
+    else: res = "💀 **Бот победил!**"
     await e.edit(f"✊✌️🖐 **КНБ**\n\n👤 Ты: {uc}\n🤖 Бот: {bc}\n\n{res}")
 
-@client.on(events.NewMessage(pattern=r'/slot$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/slot$', from_users='me'))
 async def slot_cmd(e):
     SYM = ['🍒','🍋','🍊','🍇','🍉','⭐','💎','7️⃣','🔔','🍀']
-    await e.edit("🎰 [ ▓ | ▓ | ▓ ]")
+    msg = await e.edit("🎰 [ ▓ | ▓ | ▓ ]")
     for _ in range(4):
         s = [random.choice(SYM) for _ in range(3)]
-        await e.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]")
+        await msg.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]")
         await asyncio.sleep(0.3)
     s = [random.choice(SYM) for _ in range(3)]
-    if s[0]==s[1]==s[2]:
+    if s[0] == s[1] == s[2]:
         res = "💰💰💰 **ДЖЕКПОТ!**" if s[0] in ('💎','7️⃣') else "🎊 **Выигрыш! Три одинаковых!**"
-    elif len(set(s))<3:
+    elif len(set(s)) < 3:
         res = "😅 Почти! Два одинаковых — ещё раз!"
     else:
         res = "💸 Не повезло. Попробуй снова!"
-    await e.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]\n\n{res}")
+    await msg.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]\n\n{res}")
 
-@client.on(events.NewMessage(pattern=r'/lucky$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/lucky$', from_users='me'))
 async def lucky_cmd(e):
     pct = random.randint(0, 100)
     bar = progress_bar(pct, 100, 12)
@@ -569,10 +568,10 @@ async def lucky_cmd(e):
         (10, 29): "😬 Не лучший день...",
         ( 0,  9): "💀 Сиди дома и не высовывайся!",
     }
-    msg = next(v for (a,b),v in tips.items() if a<=pct<=b)
+    msg = next(v for (a,b),v in tips.items() if a <= pct <= b)
     await e.edit(f"🔮 **Индекс удачи**\n\n[{bar}] **{pct}%**\n\n{msg}")
 
-@client.on(events.NewMessage(pattern=r'/choose (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/choose (.+)', from_users='me'))
 async def choose_cmd(e):
     raw = e.pattern_match.group(1)
     opts = [o.strip() for o in re.split(r'[,|/]', raw) if o.strip()]
@@ -583,7 +582,7 @@ async def choose_cmd(e):
     listed = "\n".join(f"{'➡️' if o==winner else '  •'} {o}" for o in opts)
     await e.edit(f"🤔 **Выбираю из {len(opts)} вариантов...**\n\n{listed}\n\n✅ **Выбор: {winner}**")
 
-@client.on(events.NewMessage(pattern=r'/quiz$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/quiz$', from_users='me'))
 async def quiz_cmd(e):
     QUESTIONS = [
         ("Столица Австралии?", ["Сидней","Мельбурн","Канберра","Перт"], 2),
@@ -604,62 +603,100 @@ async def quiz_cmd(e):
         f"||✅ Ответ: **{correct}**||"
     )
 
-# ============================================================
-# 4. УТИЛИТЫ (улучшены)
-# ============================================================
+# ════════════════════════════════════════════════════════════
+# 4. УТИЛИТЫ
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/calc (.+)', func=is_me))
+async def safe_eval(expr: str):
+    func_map = {
+        'sqrt':'math.sqrt','sin':'math.sin','cos':'math.cos','tan':'math.tan',
+        'log':'math.log','log2':'math.log2','log10':'math.log10',
+        'abs':'abs','pow':'pow','floor':'math.floor','ceil':'math.ceil',
+        'round':'round','pi':'math.pi','e':'math.e',
+        'factorial':'math.factorial','gcd':'math.gcd','hypot':'math.hypot',
+    }
+    safe = expr.strip()
+    for k, v in func_map.items():
+        safe = re.sub(rf'\b{k}\b', v, safe)
+    if any(w in safe for w in ['import','os','sys','open','exec','eval','__']):
+        return None
+    ns = {'__builtins__': {}, 'math': math, 'abs': abs, 'pow': pow, 'round': round}
+    try:
+        r = eval(safe, ns, {})
+        if isinstance(r, float):
+            if math.isinf(r) or math.isnan(r):
+                return "∞"
+            return round(r, 10)
+        return r
+    except:
+        return None
+
+def caesar(text, shift, dec=False):
+    if dec: shift = -shift
+    out = []
+    for c in text:
+        if 'А' <= c <= 'я' or c in 'ёЁ':
+            base = ord('А' if c.isupper() or c == 'Ё' else 'а')
+            size = 33
+            out.append(chr((ord(c) - base + shift) % size + base))
+        elif c.isalpha():
+            base = ord('A' if c.isupper() else 'a')
+            out.append(chr((ord(c) - base + shift) % 26 + base))
+        else:
+            out.append(c)
+    return ''.join(out)
+
+_MORSE = {
+    'A':'.-','B':'-...','C':'-.-.','D':'-..','E':'.','F':'..-.','G':'--.','H':'....','I':'..','J':'.---',
+    'K':'-.-','L':'.-..','M':'--','N':'-.','O':'---','P':'.--.','Q':'--.-','R':'.-.','S':'...','T':'-',
+    'U':'..-','V':'...-','W':'.--','X':'-..-','Y':'-.--','Z':'--..',
+    '0':'-----','1':'.----','2':'..---','3':'...--','4':'....-','5':'.....','6':'-....','7':'--...','8':'---..','9':'----.',
+    ' ':'/'
+}
+def morse_enc(t): return ' '.join(_MORSE.get(c.upper(),'?') for c in t)
+
+def gen_pwd(n=16, sym=True):
+    pool = string.ascii_letters + string.digits + ("!@#$%^&*()-_=+[]{}|;:,.<>?" if sym else "")
+    return ''.join(random.SystemRandom().choice(pool) for _ in range(n))
+
+def vigenere(text, key, dec=False):
+    key = key.upper()
+    out, ki = [], 0
+    for c in text:
+        if c.isalpha():
+            shift = ord(key[ki % len(key)]) - ord('A')
+            if dec: shift = -shift
+            base = ord('A' if c.isupper() else 'a')
+            out.append(chr((ord(c) - base + shift) % 26 + base))
+            ki += 1
+        else:
+            out.append(c)
+    return ''.join(out)
+
+@client.on(events.NewMessage(pattern=r'/calc (.+)', from_users='me'))
 async def calc_cmd(e):
     expr = e.pattern_match.group(1).strip()
-    safe_dict = {
-        'pi': math.pi, 'e': math.e, 'phi': (1+math.sqrt(5))/2,
-        'sqrt': math.sqrt, 'cbrt': lambda x: x**(1/3),
-        'factorial': math.factorial, 'gcd': math.gcd, 'lcm': math.lcm,
-        'hypot': math.hypot,
-        'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
-        'asin': math.asin, 'acos': math.acos, 'atan': math.atan,
-        'log': math.log, 'log2': math.log2, 'log10': math.log10,
-        'exp': math.exp, 'abs': abs, 'round': round,
-        'floor': math.floor, 'ceil': math.ceil,
-        'sinh': math.sinh, 'cosh': math.cosh, 'tanh': math.tanh,
-    }
-    for name in safe_dict:
-        expr = re.sub(rf'(?<![a-zA-Z]){name}(?![a-zA-Z])', f'__safe__["{name}"]', expr)
-    if any(w in expr for w in ['import', 'os', 'sys', 'open', 'exec', 'eval', '__', 'compile', 'globals', 'locals']):
-        await e.edit("❌ Выражение содержит запрещённые конструкции.")
-        return
-    try:
-        ns = {'__builtins__': {}, '__safe__': safe_dict}
-        result = eval(expr, ns, {})
-        if isinstance(result, complex):
-            result = f"{result.real:.4f}{'+' if result.imag>=0 else ''}{result.imag:.4f}i"
-        elif isinstance(result, float):
-            if math.isinf(result) or math.isnan(result):
-                result = "∞" if math.isinf(result) else "NaN"
-            else:
-                result = f"{result:.6f}".rstrip('0').rstrip('.')
-        elif isinstance(result, int):
-            result = f"{result:,}"
-        await e.edit(f"🧮 `{expr}` = **{result}**")
-    except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+    r = await safe_eval(expr)
+    if r is not None:
+        await e.edit(f"🧮 `{expr}` = **{r}**")
+    else:
+        await e.edit("❌ Ошибка выражения. Разрешены: `+ - * / % sqrt sin cos tan log abs pow pi e factorial ceil floor round`")
 
-@client.on(events.NewMessage(pattern=r'/remind (.+)', func=is_me))
+async def send_reminder(chat_id, msg, delay):
+    await asyncio.sleep(delay)
+    try:
+        await client.send_message(chat_id, f"⏰ **НАПОМИНАНИЕ:**\n{msg}")
+    except Exception as e:
+        logger.error(f"Ошибка напоминания: {e}")
+
+@client.on(events.NewMessage(pattern=r'/remind (\d+)\s+(.+)', from_users='me'))
 async def remind_cmd(e):
-    raw = e.pattern_match.group(1).strip()
-    parts = raw.split(maxsplit=1)
-    if len(parts) < 2:
-        await e.edit("ℹ️ Использование: `/remind [время] [текст]`\nПримеры: `/remind 10m Пить воду`, `/remind 2h Встреча`")
-        return
-    time_str, text = parts[0], parts[1]
-    delay = parse_time(time_str)
-    if delay is None:
-        await e.edit("❌ Не могу распознать время. Используйте: `10m`, `2h`, `1d`, `30s` или `через 10 минут`")
-        return
+    delay = int(e.pattern_match.group(1))
+    text = e.pattern_match.group(2).strip()
     await e.edit(f"⏰ Напоминание через **{fmt_time(delay)}**\n📝 _{text}_")
     asyncio.create_task(send_reminder(e.chat_id, text, delay))
 
-@client.on(events.NewMessage(pattern=r'/search (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/search (.+)', from_users='me'))
 async def search_cmd(e):
     q = e.pattern_match.group(1).strip()
     enc = q.replace(' ','+')
@@ -671,9 +708,8 @@ async def search_cmd(e):
         f"• [Wikipedia](https://ru.wikipedia.org/wiki/Special:Search?search={enc})"
     )
 
-@client.on(events.NewMessage(pattern=r'/shorten (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/shorten (.+)', from_users='me'))
 async def shorten_cmd(e):
-    import aiohttp
     url = e.pattern_match.group(1).strip()
     await e.edit("⏳ Сокращаю...")
     try:
@@ -685,66 +721,32 @@ async def shorten_cmd(e):
             await e.edit(f"✂️ **Оригинал:** `{url[:55]}{'…' if len(url)>55 else ''}`\n🔗 **Короткая:** {short.strip()}")
         else:
             raise Exception()
-    except:
+    except Exception:
         await e.edit("❌ Ошибка. Проверь URL.")
 
-@client.on(events.NewMessage(pattern=r'/weather (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/weather (.+)', from_users='me'))
 async def weather_cmd(e):
-    import aiohttp
     city = e.pattern_match.group(1).strip()
-    await e.edit(f"⏳ Получаю погоду для **{city}**...")
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://wttr.in/{city}?format=j1&lang=ru"
-            async with session.get(url, timeout=10) as resp:
-                data = await resp.json()
-        current = data['current_condition'][0]
-        temp = current['temp_C']
-        feels = current['FeelsLikeC']
-        desc = current['weatherDesc'][0]['value']
-        wind = current['windspeedKmph']
-        hum = current['humidity']
-        uv = current.get('uvIndex', 'N/A')
-        pressure = current.get('pressure', 'N/A')
-        await e.edit(
-            f"🌤️ **Погода в {city}**\n\n"
-            f"🌡️ Температура: **{temp}°C** (ощущается как {feels}°C)\n"
-            f"☁️ {desc}\n"
-            f"💨 Ветер: {wind} км/ч\n"
-            f"💧 Влажность: {hum}%\n"
-            f"☀️ UV-индекс: {uv}\n"
-            f"📊 Давление: {pressure} мбар"
-        )
-    except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}\nПопробуй другой город или проверь подключение.")
+    enc = city.replace(' ','+')
+    await e.edit(
+        f"🌤️ **Погода: {city}**\n\n"
+        f"• [wttr.in](https://wttr.in/{enc})\n"
+        f"• [OpenWeatherMap](https://openweathermap.org/find?q={enc})\n"
+        f"• [Weather.com](https://weather.com/ru-RU/weather/today/l/{enc})"
+    )
 
-@client.on(events.NewMessage(pattern=r'/translate (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/translate (.+)', from_users='me'))
 async def translate_cmd(e):
-    import aiohttp
     text = e.pattern_match.group(1).strip()
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Определение языка
-            detect_url = "https://libretranslate.com/detect"
-            async with session.post(detect_url, json={"q": text}) as resp:
-                det = await resp.json()
-                src_lang = det[0]['language'] if det else 'en'
-            # Перевод на русский
-            trans_url = "https://libretranslate.com/translate"
-            payload = {
-                "q": text,
-                "source": src_lang,
-                "target": "ru",
-                "format": "text"
-            }
-            async with session.post(trans_url, json=payload) as resp:
-                result = await resp.json()
-                translated = result['translatedText']
-            await e.edit(f"🌐 **Перевод** (с {src_lang} на русский):\n\n_{text}_\n\n➡️ _{translated}_")
-    except Exception as ex:
-        await e.edit(f"❌ Ошибка перевода: {ex}\nПопробуйте позже.")
+    enc = text.replace(' ','%20')
+    await e.edit(
+        f"🌐 **Перевод:** _{text}_\n\n"
+        f"• [RU→EN](https://translate.google.com/?sl=ru&tl=en&text={enc})\n"
+        f"• [EN→RU](https://translate.google.com/?sl=en&tl=ru&text={enc})\n"
+        f"• [Auto→RU](https://translate.google.com/?sl=auto&tl=ru&text={enc})"
+    )
 
-@client.on(events.NewMessage(pattern=r'/base64 (encode|decode) (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/base64 (encode|decode) (.+)', from_users='me'))
 async def base64_cmd(e):
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
     try:
@@ -754,10 +756,10 @@ async def base64_cmd(e):
         else:
             res = base64.b64decode(text.encode()).decode()
             await e.edit(f"🔓 **Base64 decode:**\n`{res}`")
-    except:
+    except Exception:
         await e.edit("❌ Ошибка. Проверь данные.")
 
-@client.on(events.NewMessage(pattern=r'/hash (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/hash (.+)', from_users='me'))
 async def hash_cmd(e):
     text = e.pattern_match.group(1).strip().encode()
     await e.edit(
@@ -768,75 +770,63 @@ async def hash_cmd(e):
         f"SHA512: `{hashlib.sha512(text).hexdigest()[:64]}…`"
     )
 
-@client.on(events.NewMessage(pattern=r'/morse (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/morse (.+)', from_users='me'))
 async def morse_cmd(e):
     text = e.pattern_match.group(1).strip()
     await e.edit(f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
 
-@client.on(events.NewMessage(pattern=r'/caesar (encode|decode) (\d+) (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/caesar (encode|decode) (\d+) (.+)', from_users='me'))
 async def caesar_cmd(e):
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
     res = caesar(text, shift, dec=(mode=='decode'))
     await e.edit(f"{'🔒' if mode=='encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
 
-@client.on(events.NewMessage(pattern=r'/vigenere (encode|decode) (\S+) (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/vigenere (encode|decode) (\S+) (.+)', from_users='me'))
 async def vigenere_cmd(e):
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
     res = vigenere(text, key, dec=(mode=='decode'))
     await e.edit(f"{'🔒' if mode=='encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
 
-@client.on(events.NewMessage(pattern=r'/password(?:\s+(\d+))?(?:\s+(simple))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/password(?:\s+(\d+))?(?:\s+(simple))?$', from_users='me'))
 async def password_cmd(e):
     length = max(4, min(int(e.pattern_match.group(1) or 16), 128))
-    sym    = not e.pattern_match.group(2)
-    pwd    = gen_pwd(length, sym)
-    s = "🔴 Слабый" if length<8 else "🟡 Средний" if length<12 else "🟢 Сильный" if length<20 else "💎 Очень сильный"
+    sym = not e.pattern_match.group(2)
+    pwd = gen_pwd(length, sym)
+    s = "🔴 Слабый" if length < 8 else "🟡 Средний" if length < 12 else "🟢 Сильный" if length < 20 else "💎 Очень сильный"
     await e.edit(f"🔑 **Пароль ({length} симв.)**\n\n`{pwd}`\n\nСила: {s}\nСимволы: {'✅' if sym else '❌'}")
 
-@client.on(events.NewMessage(pattern=r'/qr (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/qr (.+)', from_users='me'))
 async def qr_cmd(e):
-    text = e.pattern_match.group(1).strip()
-    try:
-        import qrcode
-        img = qrcode.make(text)
-        bio = io.BytesIO()
-        img.save(bio, 'PNG')
-        bio.seek(0)
-        await e.edit("📱 QR-код сгенерирован, отправляю файл...")
-        await client.send_file(e.chat_id, bio, caption=f"QR-код для: _{text}_")
-    except ImportError:
-        # Fallback на ссылку
-        enc = text.replace(' ','+')
-        await e.edit(f"📱 **QR-код**\n\n🔗 [Открыть изображение](https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={enc})")
-    except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+    text = e.pattern_match.group(1).strip().replace(' ','+')
+    await e.edit(
+        f"📱 **QR-код**\n\n"
+        f"🔗 [Открыть изображение](https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={text})"
+    )
 
-@client.on(events.NewMessage(pattern=r'/uuid$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/uuid$', from_users='me'))
 async def uuid_cmd(e):
-    import uuid
     ids = [str(uuid.uuid4()) for _ in range(5)]
     out = "\n".join(f"`{u}`" for u in ids)
     await e.edit(f"🆔 **Случайные UUID v4:**\n\n{out}")
 
-@client.on(events.NewMessage(pattern=r'/color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', from_users='me'))
 async def color_cmd(e):
     raw = e.pattern_match.group(1).strip()
     if raw.startswith('#'):
+        h = raw.lstrip('#')
+        r,g,b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
         hex_val = raw.upper()
-        r,g,b = int(hex_val[1:3],16), int(hex_val[3:5],16), int(hex_val[5:7],16)
     else:
         r,g,b = map(int,raw.split(','))
         hex_val = f"#{r:02X}{g:02X}{b:02X}"
-    # HSL
-    rf, gf, bf = r/255, g/255, b/255
-    mx, mn = max(rf,gf,bf), min(rf,gf,bf)
+    rf,gf,bf = r/255,g/255,b/255
+    mx,mn = max(rf,gf,bf), min(rf,gf,bf)
     l = (mx+mn)/2
     s_val = 0 if mx==mn else (mx-mn)/(1-abs(2*l-1))
     if mx==mn: h_val=0
     elif mx==rf: h_val=60*((gf-bf)/(mx-mn)%6)
     elif mx==gf: h_val=60*((bf-rf)/(mx-mn)+2)
     else: h_val=60*((rf-gf)/(mx-mn)+4)
-    # Ссылка на предпросмотр через colorhexa
     await e.edit(
         f"🎨 **Цвет**\n\n"
         f"HEX: `{hex_val}`\n"
@@ -845,144 +835,139 @@ async def color_cmd(e):
         f"🔗 [Превью](https://www.colorhexa.com/{hex_val.lstrip('#')})"
     )
 
-@client.on(events.NewMessage(pattern=r'/ascii (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/ascii (.+)', from_users='me'))
 async def ascii_cmd(e):
     text = e.pattern_match.group(1).strip()
     codes = ' '.join(str(ord(c)) for c in text)
-    back  = ''.join(chr(int(x)) for x in codes.split())
+    back = ''.join(chr(int(x)) for x in codes.split())
     await e.edit(f"🔢 **ASCII коды:**\n_{text}_\n\n`{codes}`\n\nОбратно: `{back}`")
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 5. УПРАВЛЕНИЕ СООБЩЕНИЯМИ
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/type(?:\s+(fast|slow|matrix|glitch|rainbow|wave))?\s+(.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', from_users='me'))
 async def type_cmd(e):
     mode = e.pattern_match.group(1) or 'normal'
     text = e.pattern_match.group(2).strip()
+
     if mode == 'fast':
-        await e.edit("▌")
+        msg = await e.edit("▌")
         for i in range(0, len(text), 2):
             chunk = text[:i+2]
-            await e.edit(chunk + ("▌" if i+2 < len(text) else ""))
+            await msg.edit(chunk + ("▌" if i+2 < len(text) else ""))
             await asyncio.sleep(0.04)
-        await e.edit(text)
+        await msg.edit(text)
+
     elif mode == 'slow':
-        await e.edit("▌")
+        msg = await e.edit("▌")
         shown = ""
         for ch in text:
             shown += ch
-            await e.edit(shown + "▌")
+            await msg.edit(shown + "▌")
             pause = 0.3 if ch in '.!?…' else 0.12 if ch in ',;:' else 0.07
             await asyncio.sleep(pause)
-        await e.edit(text)
+        await msg.edit(text)
+
     elif mode == 'matrix':
         CHARS = string.ascii_letters + string.digits + "@#%&"
-        await e.edit("▓" * len(text))
+        msg = await e.edit("▓" * len(text))
         for step in range(len(text)):
             parts = list(text[:step])
             for _ in range(len(text) - step):
                 parts.append(random.choice(CHARS))
-            await e.edit(''.join(parts))
+            await msg.edit(''.join(parts))
             await asyncio.sleep(0.07)
-        await e.edit(text)
+        await msg.edit(text)
+
     elif mode == 'glitch':
         GLITCH = "░▒▓█▄▀■□▪▫"
-        await e.edit("".join(random.choice(GLITCH) for _ in text))
+        msg = await e.edit("".join(random.choice(GLITCH) for _ in text))
         for _ in range(6):
-            glitched = "".join(c if random.random() > 0.4 else random.choice(GLITCH) for c in text)
-            await e.edit(glitched)
+            glitched = "".join(
+                c if random.random() > 0.4 else random.choice(GLITCH)
+                for c in text
+            )
+            await msg.edit(glitched)
             await asyncio.sleep(0.12)
-        await e.edit(text)
-    elif mode == 'rainbow':
-        colors = ['🔴','🟠','🟡','🟢','🔵','🟣']
-        await e.edit("")
-        for i in range(len(text)):
-            await e.edit(''.join(f"{colors[j%len(colors)]}{c}" for j,c in enumerate(text[:i+1])))
-            await asyncio.sleep(0.1)
-        await e.edit(''.join(f"{colors[i%len(colors)]}{c}" for i,c in enumerate(text)))
-    elif mode == 'wave':
-        await e.edit("")
-        for offset in range(5):
-            lines = []
-            for i, ch in enumerate(text):
-                shift = (i + offset) % 5
-                lines.append(' ' * shift + ch)
-            await e.edit('\n'.join(lines))
-            await asyncio.sleep(0.2)
-        await e.edit(text)
+        await msg.edit(text)
+
     else:
-        await e.edit("▌")
+        msg = await e.edit("▌")
         shown = ""
         for i, ch in enumerate(text):
             shown += ch
             if i % 2 == 0 or i == len(text)-1:
-                await e.edit(shown + ("▌" if i < len(text)-1 else ""))
+                await msg.edit(shown + ("▌" if i < len(text)-1 else ""))
                 await asyncio.sleep(0.05)
-        await e.edit(text)
+        await msg.edit(text)
 
-@client.on(events.NewMessage(pattern=r'/echo (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/echo (.+)', from_users='me'))
 async def echo_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
 
-@client.on(events.NewMessage(pattern=r'/say (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/say (.+)', from_users='me'))
 async def say_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
 
-@client.on(events.NewMessage(pattern=r'/bold (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/bold (.+)', from_users='me'))
 async def bold_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"**{e.pattern_match.group(1).strip()}**")
 
-@client.on(events.NewMessage(pattern=r'/italic (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/italic (.+)', from_users='me'))
 async def italic_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"__{e.pattern_match.group(1).strip()}__")
 
-@client.on(events.NewMessage(pattern=r'/mono (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/mono (.+)', from_users='me'))
 async def mono_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"`{e.pattern_match.group(1).strip()}`")
 
-@client.on(events.NewMessage(pattern=r'/clean(?:\s+(\d+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/clean(?:\s+(\d+))?$', from_users='me'))
 async def clean_cmd(e):
     limit = int(e.pattern_match.group(1) or 10)
     my_id = (await client.get_me()).id
-    await e.edit(f"🧹 Удаляю {limit} своих сообщений...")
+    await e.delete()
     count = 0
     async for msg in client.iter_messages(e.chat_id, limit=limit):
         if msg.out or (msg.from_id and getattr(msg.from_id,'user_id',None)==my_id):
-            await msg.delete(); count += 1; await asyncio.sleep(0.1)
-    await e.edit(f"✅ Удалено **{count}** своих сообщений")
+            await msg.delete()
+            count += 1
+            await asyncio.sleep(0.1)
+    info = await client.send_message(e.chat_id, f"✅ Удалено **{count}** своих сообщений")
     await asyncio.sleep(3)
-    await e.delete()
+    await info.delete()
 
-@client.on(events.NewMessage(pattern=r'/purge(?:\s+(\d+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/purge(?:\s+(\d+))?$', from_users='me'))
 async def purge_cmd(e):
     limit = int(e.pattern_match.group(1) or 10)
-    await e.edit(f"⚠️ Удаляю {limit} сообщений (включая чужие)...")
+    await e.delete()
     count = 0
     async for msg in client.iter_messages(e.chat_id, limit=limit):
-        await msg.delete(); count += 1; await asyncio.sleep(0.04)
-    await e.edit(f"⚠️ Удалено **{count}** сообщений")
+        await msg.delete()
+        count += 1
+        await asyncio.sleep(0.04)
+    info = await client.send_message(e.chat_id, f"⚠️ Удалено **{count}** сообщений")
     await asyncio.sleep(3)
-    await e.delete()
+    await info.delete()
 
-@client.on(events.NewMessage(pattern=r'/spam (\d+) (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/spam (\d+) (.+)', from_users='me'))
 async def spam_cmd(e):
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
-    await e.edit(f"📤 Отправляю {count} сообщений...")
     await e.delete()
     for _ in range(count):
         await client.send_message(e.chat_id, text)
-        await asyncio.sleep(random.uniform(0.3, 0.7))
+        await asyncio.sleep(0.35)
 
-@client.on(events.NewMessage(pattern=r'/forward (-?\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/forward (-?\d+)', from_users='me'))
 async def forward_cmd(e):
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `/forward [chat_id]`"); return
+        await e.edit("ℹ️ Ответьте на сообщение: `/forward [chat_id]`")
+        return
     try:
         msg = await e.get_reply_message()
         await client.forward_messages(int(e.pattern_match.group(1)), msg)
@@ -990,14 +975,15 @@ async def forward_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ {ex}")
 
-@client.on(events.NewMessage(pattern=r'/pin$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/pin$', from_users='me'))
 async def pin_cmd(e):
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение"); return
+        await e.edit("ℹ️ Ответьте на сообщение")
+        return
     await (await e.get_reply_message()).pin(notify=False)
     await e.delete()
 
-@client.on(events.NewMessage(pattern=r'/unpin$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/unpin$', from_users='me'))
 async def unpin_cmd(e):
     if e.reply_to_msg_id:
         await (await e.get_reply_message()).unpin()
@@ -1005,7 +991,7 @@ async def unpin_cmd(e):
         await client.unpin_message(e.chat_id)
     await e.delete()
 
-@client.on(events.NewMessage(pattern=r'/copyall (\d+) (-?\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/copyall (\d+) (-?\d+)', from_users='me'))
 async def copyall_cmd(e):
     count, target = int(e.pattern_match.group(1)), int(e.pattern_match.group(2))
     await e.edit(f"⏳ Копирую {count} сообщений...")
@@ -1016,14 +1002,18 @@ async def copyall_cmd(e):
     copied = 0
     for m in msgs:
         try:
-            await client.forward_messages(target, m); copied += 1; await asyncio.sleep(0.4)
-        except: pass
+            await client.forward_messages(target, m)
+            copied += 1
+            await asyncio.sleep(0.4)
+        except Exception:
+            pass
     await e.edit(f"✅ Скопировано **{copied}/{count}** → `{target}`")
 
-@client.on(events.NewMessage(pattern=r'/react (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/react (.+)', from_users='me'))
 async def react_cmd(e):
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `/react 👍`"); return
+        await e.edit("ℹ️ Ответьте на сообщение: `/react 👍`")
+        return
     emoji = e.pattern_match.group(1).strip()
     try:
         await client(SendReactionRequest(
@@ -1035,79 +1025,104 @@ async def react_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ Не удалось поставить реакцию: {ex}")
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 6. ЗАМЕТКИ И TODO
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/save (\S+) (.+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/save (\S+) (.+)', from_users='me'))
 async def save_cmd(e):
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
-    d = _load(saved_file); d[k] = v; _write(saved_file, d)
+    d = load_json(SAVED_FILE, {})
+    d[k] = v
+    write_json(SAVED_FILE, d)
     await e.edit(f"✅ `{k}` = _{v}_")
 
-@client.on(events.NewMessage(pattern=r'/get (\S+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/get (\S+)', from_users='me'))
 async def get_cmd(e):
     k = e.pattern_match.group(1)
-    v = _load(saved_file).get(k)
+    d = load_json(SAVED_FILE, {})
+    v = d.get(k)
     await e.edit(f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
 
-@client.on(events.NewMessage(pattern=r'/del (\S+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/del (\S+)', from_users='me'))
 async def del_cmd(e):
-    k = e.pattern_match.group(1); d = _load(saved_file)
+    k = e.pattern_match.group(1)
+    d = load_json(SAVED_FILE, {})
     if k in d:
-        del d[k]; _write(saved_file, d); await e.edit(f"🗑 Удалено: `{k}`")
+        del d[k]
+        write_json(SAVED_FILE, d)
+        await e.edit(f"🗑 Удалено: `{k}`")
     else:
         await e.edit(f"❌ `{k}` не найден")
 
-@client.on(events.NewMessage(pattern=r'/list$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/list$', from_users='me'))
 async def list_cmd(e):
-    d = _load(saved_file)
-    if not d: await e.edit("📭 Нет данных"); return
+    d = load_json(SAVED_FILE, {})
+    if not d:
+        await e.edit("📭 Нет данных")
+        return
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v)>40 else ''}_" for k,v in d.items())
     await e.edit(f"📦 **Сохранено ({len(d)}):**\n\n{items}")
 
-@client.on(events.NewMessage(pattern=r'/note (\S+)(?: (.+))?', func=is_me))
+@client.on(events.NewMessage(pattern=r'/note (\S+)(?: (.+))?', from_users='me'))
 async def note_cmd(e):
     k = e.pattern_match.group(1)
     t = e.pattern_match.group(2) or ""
     if e.reply_to_msg_id:
-        r = await e.get_reply_message(); t = r.text or t
-    if not t: await e.edit("ℹ️ `/note <название> <текст>` или ответом"); return
-    d = _load(notes_file); d[k] = t; _write(notes_file, d)
+        r = await e.get_reply_message()
+        t = r.text or t
+    if not t:
+        await e.edit("ℹ️ `/note <название> <текст>` или ответом")
+        return
+    d = load_json(NOTES_FILE, {})
+    d[k] = t
+    write_json(NOTES_FILE, d)
     await e.edit(f"📝 Заметка сохранена: `{k}`")
 
-@client.on(events.NewMessage(pattern=r'/getnote (\S+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/getnote (\S+)', from_users='me'))
 async def getnote_cmd(e):
-    k = e.pattern_match.group(1); d = _load(notes_file)
-    await e.edit(f"📝 **{k}:**\n\n{d[k]}" if k in d else f"❌ Заметка `{k}` не найдена")
-
-@client.on(events.NewMessage(pattern=r'/delnote (\S+)', func=is_me))
-async def delnote_cmd(e):
-    k = e.pattern_match.group(1); d = _load(notes_file)
+    k = e.pattern_match.group(1)
+    d = load_json(NOTES_FILE, {})
     if k in d:
-        del d[k]; _write(notes_file, d); await e.edit(f"🗑 Заметка удалена: `{k}`")
+        await e.edit(f"📝 **{k}:**\n\n{d[k]}")
+    else:
+        await e.edit(f"❌ Заметка `{k}` не найдена")
+
+@client.on(events.NewMessage(pattern=r'/delnote (\S+)', from_users='me'))
+async def delnote_cmd(e):
+    k = e.pattern_match.group(1)
+    d = load_json(NOTES_FILE, {})
+    if k in d:
+        del d[k]
+        write_json(NOTES_FILE, d)
+        await e.edit(f"🗑 Заметка удалена: `{k}`")
     else:
         await e.edit(f"❌ `{k}` не найдена")
 
-@client.on(events.NewMessage(pattern=r'/notes$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/notes$', from_users='me'))
 async def notes_cmd(e):
-    d = _load(notes_file)
-    if not d: await e.edit("📭 Нет заметок"); return
+    d = load_json(NOTES_FILE, {})
+    if not d:
+        await e.edit("📭 Нет заметок")
+        return
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v)>40 else ''}_" for k,v in d.items())
     await e.edit(f"📝 **Заметки ({len(d)}):**\n\n{items}")
 
-@client.on(events.NewMessage(pattern=r'/todo (.+)', func=is_me))
+# TODO
+@client.on(events.NewMessage(pattern=r'/todo (.+)', from_users='me'))
 async def todo_add_cmd(e):
     task = e.pattern_match.group(1).strip()
-    todos = load_todos()
+    todos = load_json(TODOS_FILE, [])
     todos.append({'text': task, 'done': False, 'id': int(time.time())})
-    write_todos(todos)
+    write_json(TODOS_FILE, todos)
     await e.edit(f"✅ Задача добавлена: _{task}_\n📋 Всего: {len(todos)}")
 
-@client.on(events.NewMessage(pattern=r'/todos$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/todos$', from_users='me'))
 async def todos_cmd(e):
-    todos = load_todos()
-    if not todos: await e.edit("📭 Список задач пуст"); return
+    todos = load_json(TODOS_FILE, [])
+    if not todos:
+        await e.edit("📭 Список задач пуст")
+        return
     lines = []
     for i, t in enumerate(todos, 1):
         mark = "✅" if t['done'] else "⬜"
@@ -1115,62 +1130,63 @@ async def todos_cmd(e):
     done = sum(1 for t in todos if t['done'])
     await e.edit(f"📋 **Список задач** ({done}/{len(todos)} выполнено):\n\n" + "\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/done (\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/done (\d+)', from_users='me'))
 async def done_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
-    todos = load_todos()
+    todos = load_json(TODOS_FILE, [])
     if 0 <= idx < len(todos):
-        todos[idx]['done'] = True; write_todos(todos)
+        todos[idx]['done'] = True
+        write_json(TODOS_FILE, todos)
         await e.edit(f"✅ Выполнено: _{todos[idx]['text']}_")
     else:
         await e.edit(f"❌ Задача #{idx+1} не найдена")
 
-@client.on(events.NewMessage(pattern=r'/undone (\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/undone (\d+)', from_users='me'))
 async def undone_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
-    todos = load_todos()
+    todos = load_json(TODOS_FILE, [])
     if 0 <= idx < len(todos):
-        todos[idx]['done'] = False; write_todos(todos)
+        todos[idx]['done'] = False
+        write_json(TODOS_FILE, todos)
         await e.edit(f"⬜ Снята отметка: _{todos[idx]['text']}_")
     else:
         await e.edit(f"❌ Задача #{idx+1} не найдена")
 
-@client.on(events.NewMessage(pattern=r'/deltodo (\d+)', func=is_me))
+@client.on(events.NewMessage(pattern=r'/deltodo (\d+)', from_users='me'))
 async def deltodo_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
-    todos = load_todos()
+    todos = load_json(TODOS_FILE, [])
     if 0 <= idx < len(todos):
-        removed = todos.pop(idx); write_todos(todos)
+        removed = todos.pop(idx)
+        write_json(TODOS_FILE, todos)
         await e.edit(f"🗑 Удалена задача: _{removed['text']}_")
     else:
         await e.edit(f"❌ Задача #{idx+1} не найдена")
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 7. AFK
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/afk(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/afk(?:\s+(.+))?$', from_users='me'))
 async def afk_cmd(e):
-    global afk_start_time, afk_reason
-    afk_start_time = time.time(); afk_reason = (e.pattern_match.group(1) or '').strip()
-    r = f"\n📝 _{afk_reason}_" if afk_reason else ""
+    reason = (e.pattern_match.group(1) or '').strip()
+    state.set_afk(reason)
+    r = f"\n📝 _{reason}_" if reason else ""
     await e.edit(f"😴 **AFK включён**{r}")
 
-@client.on(events.NewMessage(pattern=r'/unafk$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/unafk$', from_users='me'))
 async def unafk_cmd(e):
-    global afk_start_time, afk_reason
-    if afk_start_time:
-        dur = fmt_time(time.time() - afk_start_time)
-        afk_start_time = None; afk_reason = ""
-        await e.edit(f"☀️ **AFK выключен** | Отсутствовал: _{dur}_")
+    dur = state.clear_afk()
+    if dur is not None:
+        await e.edit(f"☀️ **AFK выключен** | Отсутствовал: _{fmt_time(dur)}_")
     else:
         await e.edit("ℹ️ AFK не был включён")
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 8. ИНФОРМАЦИЯ О ЧАТЕ
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/chatinfo$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/chatinfo$', from_users='me'))
 async def chatinfo_cmd(e):
     chat = await e.get_chat()
     name = getattr(chat,'title',None) or f"{getattr(chat,'first_name','')} {getattr(chat,'last_name','')}".strip()
@@ -1183,10 +1199,11 @@ async def chatinfo_cmd(e):
         f"🔖 @{uname}" if uname else "🔖 Username: нет",
         f"👥 Тип: `{type(chat).__name__}`",
     ]
-    if members: lines.append(f"👤 Участников: `{members}`")
+    if members:
+        lines.append(f"👤 Участников: `{members}`")
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/members$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/members$', from_users='me'))
 async def members_cmd(e):
     try:
         p = await client.get_participants(e.chat_id)
@@ -1195,7 +1212,7 @@ async def members_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ {ex}")
 
-@client.on(events.NewMessage(pattern=r'/admins$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/admins$', from_users='me'))
 async def admins_cmd(e):
     try:
         admins = await client.get_participants(e.chat_id, filter=ChannelParticipantsAdmins())
@@ -1207,7 +1224,7 @@ async def admins_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ {ex}")
 
-@client.on(events.NewMessage(pattern=r'/top(?:\s+(\d+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/top(?:\s+(\d+))?$', from_users='me'))
 async def top_cmd(e):
     limit = int(e.pattern_match.group(1) or 200)
     await e.edit("⏳ Анализирую...")
@@ -1220,14 +1237,14 @@ async def top_cmd(e):
                 if s:
                     n = f"{getattr(s,'first_name','') or ''} {getattr(s,'last_name','') or ''}".strip()
                     names[msg.sender_id] = n or str(msg.sender_id)
-    top = sorted(cnt.items(), key=lambda x:x[1], reverse=True)[:10]
+    top = sorted(cnt.items(), key=lambda x: x[1], reverse=True)[:10]
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     lines = [f"🏆 **Топ активных** (из {limit} сообщ.):\n"]
-    for i,(uid,c) in enumerate(top):
-        lines.append(f"{medals[i]} {names.get(uid,uid)} — `{c}` сообщ.")
+    for i, (uid, c) in enumerate(top):
+        lines.append(f"{medals[i]} {names.get(uid, uid)} — `{c}` сообщ.")
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/bots$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/bots$', from_users='me'))
 async def bots_cmd(e):
     try:
         bots = await client.get_participants(e.chat_id, filter=ChannelParticipantsBots())
@@ -1238,80 +1255,186 @@ async def bots_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ {ex}")
 
-# ============================================================
-# 9. СТАТИСТИКА (новая команда)
-# ============================================================
+# ════════════════════════════════════════════════════════════
+# 9. СБРОС ДАННЫХ (новая команда)
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/stats$', func=is_me))
-async def stats_cmd(e):
-    s = _load(stats_file)
-    total = sum(s.values())
-    if total == 0:
-        await e.edit("📊 Статистика пуста. Пока не было команд.")
-        return
-    top = sorted(s.items(), key=lambda x: x[1], reverse=True)[:5]
-    lines = [f"📊 **Статистика команд** (всего {total})"]
-    for cmd, count in top:
-        lines.append(f"• `/{cmd}` — {count} раз ({count/total*100:.1f}%)")
-    await e.edit("\n".join(lines))
+@client.on(events.NewMessage(pattern=r'/resetdata$', from_users='me'))
+async def resetdata_cmd(e):
+    """Удаляет все сохранённые данные (заметки, todo, хранилище, статистику, состояние)"""
+    files = [DATA_FILE, SAVED_FILE, NOTES_FILE, TODOS_FILE, STATS_FILE]
+    for f in files:
+        if os.path.exists(f):
+            os.remove(f)
+            logger.info(f"Удалён {f}")
+    # Сброс состояния в памяти
+    state.auto_reply_enabled = False
+    state.auto_reply_text = '💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘'
+    state.ghost_mode = False
+    state.afk_start_time = None
+    state.afk_reason = ''
+    state.save()
+    await e.edit("🧹 **Все данные сброшены.**")
 
-# ============================================================
-# 10. HELP (обновлён)
-# ============================================================
+# ════════════════════════════════════════════════════════════
+# 10. ПОЛНАЯ СПРАВКА
+# ════════════════════════════════════════════════════════════
 
 HELP_CATS = {
-    'основные': '... (оставлено как в исходнике, но можно дополнить)',
-    # ... все категории остаются без изменений, но я сократил для краткости
+    'основные': (
+        "⚙️ **ОСНОВНЫЕ (10 команд)**\n\n"
+        "`/sleep` — Включить автоответчик.\n"
+        "`/wake` — Выключить автоответчик.\n"
+        "`/setreply [текст]` — Задать текст автоответчика.\n"
+        "`/status` — Полный статус бота.\n"
+        "`/time` — Время, дата, день недели, день года.\n"
+        "`/ping` — Задержка соединения.\n"
+        "`/id` — ID чата, свой ID, ID отправителя (ответом).\n"
+        "`/info` — Информация о боте.\n"
+        "`/restart` — Перезапуск бота.\n"
+        "`/ghost` — Переключить ghost-режим.\n"
+        "`/resetdata` — Сбросить все данные (осторожно!)."
+    ),
+    'профиль': (
+        "👤 **ПРОФИЛЬ (7 команд)**\n\n"
+        "`/me` — Свой профиль.\n"
+        "`/avatar` — Отправить свою аватарку (ответом — чужую).\n"
+        "`/name [имя]` — Сменить имя.\n"
+        "`/lastname [фамилия]` — Сменить фамилию.\n"
+        "`/bio [текст]` — Обновить «о себе».\n"
+        "`/whois @ник` — Информация о пользователе.\n"
+        "`/username_check @ник` — Проверить занятость username."
+    ),
+    'игры': (
+        "🎮 **ИГРЫ И РАЗВЛЕЧЕНИЯ (12 команд)**\n\n"
+        "`/dice`, `/dart`, `/basket`, `/football`, `/bowling`, `/casino` — анимации Telegram.\n"
+        "`/coin` — Монетка.\n"
+        "`/rand` — Случайное число.\n"
+        "`/8ball [вопрос]` — Магический шар.\n"
+        "`/rps [к/н/б]` — Камень, ножницы, бумага.\n"
+        "`/slot` — Слот-машина.\n"
+        "`/lucky` — Индекс удачи.\n"
+        "`/choose [варианты]` — Выбрать случайный вариант.\n"
+        "`/quiz` — Викторина с ответом."
+    ),
+    'утилиты': (
+        "🛠 **УТИЛИТЫ (16 команд)**\n\n"
+        "`/calc [выражение]` — Калькулятор.\n"
+        "`/remind [сек] [текст]` — Напоминание.\n"
+        "`/search [запрос]` — Ссылки на поисковики.\n"
+        "`/shorten [url]` — Сократить ссылку.\n"
+        "`/weather [город]` — Прогноз погоды.\n"
+        "`/translate [текст]` — Перевод.\n"
+        "`/base64 encode/decode [текст]` — Base64.\n"
+        "`/hash [текст]` — Хэши.\n"
+        "`/morse [текст]` — Азбука Морзе.\n"
+        "`/caesar encode/decode [сдвиг] [текст]` — Шифр Цезаря.\n"
+        "`/vigenere encode/decode [ключ] [текст]` — Шифр Виженера.\n"
+        "`/password [длина] [simple]` — Генератор пароля.\n"
+        "`/qr [текст]` — QR-код.\n"
+        "`/uuid` — UUID v4.\n"
+        "`/color [#HEX или R,G,B]` — Информация о цвете.\n"
+        "`/ascii [текст]` — ASCII-коды."
+    ),
+    'сообщения': (
+        "✉️ **УПРАВЛЕНИЕ СООБЩЕНИЯМИ (14 команд)**\n\n"
+        "`/type [режим] [текст]` — Эффекты печати (fast/slow/matrix/glitch).\n"
+        "`/echo [текст]` — Отправить текст без команды.\n"
+        "`/say [текст]` — Аналог echo.\n"
+        "`/bold [текст]` — Жирный текст.\n"
+        "`/italic [текст]` — Курсив.\n"
+        "`/mono [текст]` — Моноширинный.\n"
+        "`/clean [n]` — Удалить свои N сообщений.\n"
+        "`/purge [n]` — Удалить любые N сообщений.\n"
+        "`/spam [n] [текст]` — Отправить N раз.\n"
+        "`/forward [chat_id]` — Переслать сообщение.\n"
+        "`/pin` — Закрепить сообщение.\n"
+        "`/unpin` — Открепить.\n"
+        "`/copyall [n] [chat_id]` — Скопировать N сообщений.\n"
+        "`/react [эмодзи]` — Поставить реакцию."
+    ),
+    'заметки': (
+        "📦 **ЗАМЕТКИ И TODO (12 команд)**\n\n"
+        "**Хранилище:** `/save`, `/get`, `/del`, `/list`\n"
+        "**Заметки:** `/note`, `/getnote`, `/delnote`, `/notes`\n"
+        "**TODO:** `/todo`, `/todos`, `/done`, `/undone`, `/deltodo`"
+    ),
+    'afk': (
+        "😴 **AFK (2 команды)**\n\n"
+        "`/afk [причина]` — Включить AFK.\n"
+        "`/unafk` — Выключить AFK с отчётом времени."
+    ),
+    'инфо': (
+        "📊 **ИНФОРМАЦИЯ О ЧАТЕ (5 команд)**\n\n"
+        "`/chatinfo` — Информация о чате.\n"
+        "`/members` — Количество участников.\n"
+        "`/admins` — Список администраторов.\n"
+        "`/top [n]` — Топ-10 активных.\n"
+        "`/bots` — Список ботов."
+    ),
 }
 
-@client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', func=is_me))
+@client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
     if cat and cat in HELP_CATS:
-        await e.edit(HELP_CATS[cat]); return
+        await e.edit(HELP_CATS[cat])
+        return
     if cat:
-        await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`"); return
+        await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
+        return
+
     await e.edit(
-        "📚 **UserBot — 70+ команд**\n\n"
-        "Пиши `/help [категория]` для подробного описания:\n\n"
-        "⚙️ основные\n👤 профиль\n🎮 игры\n🛠 утилиты\n✉️ сообщения\n📦 заметки\n😴 afk\n📊 инфо\n📈 stats"
+        "📚 **UserBot Ultimate Help Center**\n\n"
+        "Добро пожаловать в справочник команд.\n\n"
+        "Использование: `/help категория`\n\n"
+        "⚙️ Основные — sleep, wake, setreply, status, time, ping, id, info, restart, ghost, resetdata\n"
+        "👤 Профиль — me, avatar, name, bio, lastname, whois, username_check\n"
+        "🎮 Игры — dice, dart, basket, football, bowling, casino, coin, rand, 8ball, rps, slot, lucky, choose, quiz\n"
+        "🛠 Утилиты — calc, remind, search, shorten, weather, translate, base64, hash, morse, caesar, vigenere, password, qr, uuid, color, ascii\n"
+        "✉️ Сообщения — type, echo, say, bold, italic, mono, clean, purge, spam, forward, pin, unpin, copyall, react\n"
+        "📦 Заметки — save, get, del, list, note, getnote, delnote, notes, todo, todos, done, undone, deltodo\n"
+        "😴 AFK — afk, unafk\n"
+        "📊 Информация — chatinfo, members, admins, top, bots\n\n"
+        "Подробная справка открывается через категории.\n"
+        "Пример: `/help утилиты`"
     )
     bump_stat('cmds')
 
-# ============================================================
+# ════════════════════════════════════════════════════════════
 # 11. ВХОДЯЩИЕ СООБЩЕНИЯ (автоответчик + AFK)
-# ============================================================
+# ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(incoming=True))
+reply_cooldown = defaultdict(float)
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def incoming_handler(event):
-    if event.sender_id == MY_ID:
-        return
-    if not event.is_private:
-        return
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
     uid = event.sender_id
     now = time.time()
-    if afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
-        dur = fmt_time(now - afk_start_time)
-        r = f"\n📝 _{afk_reason}_" if afk_reason else ""
+
+    # AFK ответ (не чаще раза в 60 секунд)
+    if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
+        dur = fmt_time(now - state.afk_start_time)
+        reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
         reply_cooldown[f'afk_{uid}'] = now
-        await event.reply(f"😴 Хозяин AFK уже **{dur}**{r}")
-    if auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
+        await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
+
+    # Автоответчик (не чаще раза в 10 секунд)
+    if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_cooldown[uid] = now
         await asyncio.sleep(1)
-        await event.reply(auto_reply_text)
+        await event.reply(state.auto_reply_text)
 
-# ============================================================
-# 12. ЗАПУСК
-# ============================================================
+# ════════════════════════════════════════════════════════════
+# ЗАПУСК
+# ════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🚀 Запуск UserBot (улучшенная версия)...")
+    print("🚀 Запуск UserBot (71 команда)...")
     Thread(target=run_web, daemon=True).start()
     client.start()
-    loop = asyncio.get_event_loop()
-    MY_ID = loop.run_until_complete(client.get_me()).id
-    print(f"✅ UserBot запущен! ID: {MY_ID}")
+    print("✅ UserBot запущен!")
     client.run_until_disconnected()
