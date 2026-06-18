@@ -19,7 +19,8 @@ from telethon import TelegramClient, events, utils
 from telethon.tl.types import (
     InputMediaDice, MessageEntityMentionName,
     ChannelParticipantsAdmins, ChannelParticipantsBots,
-    ReactionEmoji
+    ReactionEmoji,
+    InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
@@ -1241,7 +1242,7 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. ПОЛНАЯ СПРАВКА (простой список команд для копирования)
+# 10. КОМАНДЫ СПРАВКИ С КНОПКАМИ
 # ════════════════════════════════════════════════════════════
 
 # Словарь команд по категориям (для внутреннего использования)
@@ -1374,8 +1375,6 @@ HELP_CATS = {
 @client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
-
-    # Если указана категория → выводим подробное описание
     if cat and cat in HELP_CATS:
         await e.edit(HELP_CATS[cat])
         return
@@ -1383,26 +1382,39 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    # Без аргументов → простой список всех команд по одной на строке
+    # Собираем все команды (без дублей)
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
-    lines = ["📋 **Все команды UserBot** (копируйте нужную):\n"]
-    lines.extend(all_cmds)
-    lines.append("\nℹ️ Подробности: `/help категория`")
-    await e.edit("\n".join(lines))
+
+    # Создаём кнопки: каждая команда – кнопка с вставкой в поле ввода
+    buttons = [InlineKeyboardButton(cmd, switch_inline_query_current_chat=cmd) for cmd in all_cmds]
+    # Разбиваем на ряды по 4 кнопки
+    rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
+    markup = InlineKeyboardMarkup(rows)
+
+    await e.edit(
+        "📋 **Все команды UserBot**\n"
+        "Нажмите на команду → она вставится в поле ввода.\n\n"
+        "ℹ️ Подробности: `/help категория`",
+        buttons=markup
+    )
     bump_stat('cmds')
 
-# ─── Команда /commands (полный синоним /help без аргументов) ──
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
-    lines = ["📋 **Все команды UserBot** (копируйте нужную):\n"]
-    lines.extend(all_cmds)
-    lines.append("\nℹ️ Подробности: `/help категория`")
-    await e.edit("\n".join(lines))
+    buttons = [InlineKeyboardButton(cmd, switch_inline_query_current_chat=cmd) for cmd in all_cmds]
+    rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
+    markup = InlineKeyboardMarkup(rows)
+    await e.edit(
+        "📋 **Все команды UserBot**\n"
+        "Нажмите на команду → она вставится в поле ввода.\n\n"
+        "ℹ️ Подробности: `/help категория`",
+        buttons=markup
+    )
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
