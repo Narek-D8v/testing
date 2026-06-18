@@ -148,43 +148,9 @@ def write_json(path, data):
     except Exception as e:
         logger.error(f"Ошибка записи {path}: {e}")
 
-# ─── Менеджер команд с защитой от флуда ────────────────────
+# ─── Защита от флуда ────────────────────────────────────────
 command_cooldown = defaultdict(float)
-COOLDOWN_SEC = 1.5  # минимальный интервал между командами одного пользователя
-
-def command_handler(pattern, from_me=True, cooldown=COOLDOWN_SEC):
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(event):
-            # Проверка, что команда от владельца
-            if from_me:
-                me = await event.client.get_me()
-                if event.sender_id != me.id:
-                    return
-
-            # Ghost-режим: удаляем команду сразу, но выполняем
-            if state.ghost_mode:
-                await event.delete()
-
-            # Защита от флуда
-            uid = event.sender_id
-            now = time.time()
-            if now - command_cooldown.get(uid, 0) < cooldown:
-                # Можно проигнорировать или ответить предупреждением
-                return
-            command_cooldown[uid] = now
-
-            try:
-                await func(event)
-                bump_stat('cmds')
-            except Exception as e:
-                logger.error(f"Ошибка в команде {pattern}: {e}")
-                try:
-                    await event.edit(f"❌ Ошибка: {e}")
-                except:
-                    pass
-        return wrapper
-    return decorator
+COOLDOWN_SEC = 1.5
 
 def bump_stat(key, n=1):
     d = load_json(STATS_FILE, {})
@@ -1256,18 +1222,16 @@ async def bots_cmd(e):
         await e.edit(f"❌ {ex}")
 
 # ════════════════════════════════════════════════════════════
-# 9. СБРОС ДАННЫХ (новая команда)
+# 9. СБРОС ДАННЫХ
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(pattern=r'/resetdata$', from_users='me'))
 async def resetdata_cmd(e):
-    """Удаляет все сохранённые данные (заметки, todo, хранилище, статистику, состояние)"""
     files = [DATA_FILE, SAVED_FILE, NOTES_FILE, TODOS_FILE, STATS_FILE]
     for f in files:
         if os.path.exists(f):
             os.remove(f)
             logger.info(f"Удалён {f}")
-    # Сброс состояния в памяти
     state.auto_reply_enabled = False
     state.auto_reply_text = '💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘'
     state.ghost_mode = False
@@ -1277,9 +1241,42 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. ПОЛНАЯ СПРАВКА
+# 10. ПОЛНАЯ СПРАВКА (компактный список + подробные категории)
 # ════════════════════════════════════════════════════════════
 
+# Словарь команд по категориям (только имена)
+COMMANDS_LIST = {
+    'основные': [
+        '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
+        '/id', '/info', '/restart', '/ghost', '/resetdata'
+    ],
+    'профиль': [
+        '/me', '/avatar', '/name', '/lastname', '/bio', '/whois', '/username_check'
+    ],
+    'игры': [
+        '/dice', '/dart', '/basket', '/football', '/bowling', '/casino',
+        '/coin', '/rand', '/8ball', '/rps', '/slot', '/lucky', '/choose', '/quiz'
+    ],
+    'утилиты': [
+        '/calc', '/remind', '/search', '/shorten', '/weather', '/translate',
+        '/base64', '/hash', '/morse', '/caesar', '/vigenere', '/password',
+        '/qr', '/uuid', '/color', '/ascii'
+    ],
+    'сообщения': [
+        '/type', '/echo', '/say', '/bold', '/italic', '/mono',
+        '/clean', '/purge', '/spam', '/forward', '/pin', '/unpin',
+        '/copyall', '/react'
+    ],
+    'заметки': [
+        '/save', '/get', '/del', '/list',
+        '/note', '/getnote', '/delnote', '/notes',
+        '/todo', '/todos', '/done', '/undone', '/deltodo'
+    ],
+    'afk': ['/afk', '/unafk'],
+    'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
+}
+
+# Детальные описания для /help <категория>
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ (10 команд)**\n\n"
@@ -1377,6 +1374,8 @@ HELP_CATS = {
 @client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
+
+    # Если указана категория → выводим подробное описание
     if cat and cat in HELP_CATS:
         await e.edit(HELP_CATS[cat])
         return
@@ -1384,21 +1383,34 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    await e.edit(
-        "📚 **UserBot Ultimate Help Center**\n\n"
-        "Добро пожаловать в справочник команд.\n\n"
-        "Использование: `/help категория`\n\n"
-        "⚙️ Основные — sleep, wake, setreply, status, time, ping, id, info, restart, ghost, resetdata\n"
-        "👤 Профиль — me, avatar, name, bio, lastname, whois, username_check\n"
-        "🎮 Игры — dice, dart, basket, football, bowling, casino, coin, rand, 8ball, rps, slot, lucky, choose, quiz\n"
-        "🛠 Утилиты — calc, remind, search, shorten, weather, translate, base64, hash, morse, caesar, vigenere, password, qr, uuid, color, ascii\n"
-        "✉️ Сообщения — type, echo, say, bold, italic, mono, clean, purge, spam, forward, pin, unpin, copyall, react\n"
-        "📦 Заметки — save, get, del, list, note, getnote, delnote, notes, todo, todos, done, undone, deltodo\n"
-        "😴 AFK — afk, unafk\n"
-        "📊 Информация — chatinfo, members, admins, top, bots\n\n"
-        "Подробная справка открывается через категории.\n"
-        "Пример: `/help утилиты`"
-    )
+    # Без аргументов → выводим компактный список всех команд
+    lines = ["📚 **Все команды UserBot** (копируйте блок целиком)\n", "```"]
+    for category, cmds in COMMANDS_LIST.items():
+        emoji_map = {
+            'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+            'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+        }
+        emoji = emoji_map.get(category, '•')
+        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
+    lines.append("```")
+    lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
+    await e.edit("\n".join(lines))
+    bump_stat('cmds')
+
+# ─── Команда /commands (полный синоним /help без аргументов) ──
+@client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
+async def commands_cmd(e):
+    lines = ["📚 **Все команды UserBot** (копируйте блок целиком)\n", "```"]
+    for category, cmds in COMMANDS_LIST.items():
+        emoji_map = {
+            'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+            'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+        }
+        emoji = emoji_map.get(category, '•')
+        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
+    lines.append("```")
+    lines.append("\nℹ️ Подробности: `/help категория` (например, `/help утилиты`)")
+    await e.edit("\n".join(lines))
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
@@ -1415,14 +1427,12 @@ async def incoming_handler(event):
     uid = event.sender_id
     now = time.time()
 
-    # AFK ответ (не чаще раза в 60 секунд)
     if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
         dur = fmt_time(now - state.afk_start_time)
         reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
         reply_cooldown[f'afk_{uid}'] = now
         await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
 
-    # Автоответчик (не чаще раза в 10 секунд)
     if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_cooldown[uid] = now
         await asyncio.sleep(1)
