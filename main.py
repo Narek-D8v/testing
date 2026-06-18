@@ -21,7 +21,7 @@ from telethon.tl.types import (
     ChannelParticipantsAdmins, ChannelParticipantsBots,
     ReactionEmoji
 )
-from telethon.tl.custom import Button  # <-- Импортируем Button для создания кнопок
+from telethon.tl.custom import Button  # <-- для кнопок
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
@@ -1242,10 +1242,10 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. КОМАНДЫ СПРАВКИ С КНОПКАМИ (исправлен импорт Button)
+# 10. СПРАВКА С КАТЕГОРИЯМИ И КНОПКАМИ
 # ════════════════════════════════════════════════════════════
 
-# Словарь команд по категориям (для внутреннего использования)
+# Словарь команд по категориям (для отображения и формирования кнопок)
 COMMANDS_LIST = {
     'основные': [
         '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
@@ -1382,6 +1382,19 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
+    # Формируем текст с категориями и списком команд
+    lines = ["📋 **Все команды UserBot**\n"]
+    emoji_map = {
+        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+    }
+    for category, cmds in COMMANDS_LIST.items():
+        emoji = emoji_map.get(category, '•')
+        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
+    lines.append("\nℹ️ Нажмите на кнопку с командой, чтобы вставить её в поле ввода.")
+    text = "\n".join(lines)
+
+    # Все команды для кнопок (без дублирования, т.к. каждая команда только в одной категории)
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
@@ -1390,27 +1403,30 @@ async def help_cmd(e):
     buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
     rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
 
-    await e.edit(
-        "📋 **Все команды UserBot**\n"
-        "Нажмите на команду → она вставится в поле ввода.\n\n"
-        "ℹ️ Подробности: `/help категория`",
-        buttons=rows
-    )
+    await e.edit(text, buttons=rows)
     bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
+    # Аналогично /help без аргументов
+    lines = ["📋 **Все команды UserBot**\n"]
+    emoji_map = {
+        'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
+        'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
+    }
+    for category, cmds in COMMANDS_LIST.items():
+        emoji = emoji_map.get(category, '•')
+        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
+    lines.append("\nℹ️ Нажмите на кнопку с командой, чтобы вставить её в поле ввода.")
+    text = "\n".join(lines)
+
     all_cmds = []
     for cmds in COMMANDS_LIST.values():
         all_cmds.extend(cmds)
     buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
     rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-    await e.edit(
-        "📋 **Все команды UserBot**\n"
-        "Нажмите на команду → она вставится в поле ввода.\n\n"
-        "ℹ️ Подробности: `/help категория`",
-        buttons=rows
-    )
+
+    await e.edit(text, buttons=rows)
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
