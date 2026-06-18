@@ -1447,4 +1447,4 @@ if __name__ == "__main__":
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ UserBot запущен!")
-    client.run_until_disconnected()
+    client.run_until_disconnected() 
