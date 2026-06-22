@@ -21,9 +21,10 @@ from telethon.tl.types import (
     ChannelParticipantsAdmins, ChannelParticipantsBots,
     ReactionEmoji
 )
-from telethon.tl.custom import Button  # <-- для кнопок
+from telethon.tl.custom import Button
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
+from telethon.sessions import StringSession
 from flask import Flask
 from threading import Thread
 
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 API_ID  = os.environ.get('API_ID')
 API_HASH = os.environ.get('API_HASH')
 PORT = int(os.environ.get('PORT', 8080))
+STRING_SESSION = os.environ.get('STRING_SESSION')
 
 DATA_FILE  = 'userbot_data.json'
 SAVED_FILE = 'saved_data.json'
@@ -162,11 +164,16 @@ def bump_stat(key, n=1):
 state = BotState()
 
 # ─── Клиент Telegram ───────────────────────────────────────
-try:
-    client = TelegramClient('my_userbot', int(API_ID), API_HASH)
-except ValueError:
-    from telethon.sessions import SQLiteSession
-    client = TelegramClient(SQLiteSession('my_userbot'), int(API_ID), API_HASH)
+if STRING_SESSION:
+    client = TelegramClient(StringSession(STRING_SESSION), int(API_ID), API_HASH)
+    logger.info("Используется StringSession")
+else:
+    try:
+        client = TelegramClient('my_userbot', int(API_ID), API_HASH)
+    except ValueError:
+        from telethon.sessions import SQLiteSession
+        client = TelegramClient(SQLiteSession('my_userbot'), int(API_ID), API_HASH)
+    logger.info("Используется файловая сессия")
 
 # ─── Flask веб-сервер ─────────────────────────────────────
 app = Flask(__name__)
@@ -463,21 +470,18 @@ async def eightball_cmd(e):
             ("Шансы ничтожны", "🎰", "Даже удача отвернулась."),
         ],
     }
-
     question = (e.pattern_match.group(1) or '').strip()
     spin = ["🎱", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🎱"]
     msg = await e.edit("🎱 Шар вращается...")
     for frame in spin:
         await msg.edit(f"{frame} Шар вращается...")
         await asyncio.sleep(0.15)
-
     pool_key = random.choices(['pos','neu','neg'], weights=[38,27,35])[0]
     answer, emoji, comment = random.choice(ANSWERS[pool_key])
     color = {"pos":"🟢","neu":"🟡","neg":"🔴"}[pool_key]
     label = {"pos":"ПОЗИТИВНЫЙ","neu":"НЕЙТРАЛЬНЫЙ","neg":"НЕГАТИВНЫЙ"}[pool_key]
     confidence = random.randint(55, 99)
     bar = progress_bar(confidence, 100, 10)
-
     q_line = f"❓ _{question}_\n\n" if question else ""
     await msg.edit(
         f"🎱 **Магический шар**\n\n"
@@ -817,7 +821,6 @@ async def ascii_cmd(e):
 async def type_cmd(e):
     mode = e.pattern_match.group(1) or 'normal'
     text = e.pattern_match.group(2).strip()
-
     if mode == 'fast':
         msg = await e.edit("▌")
         for i in range(0, len(text), 2):
@@ -825,7 +828,6 @@ async def type_cmd(e):
             await msg.edit(chunk + ("▌" if i+2 < len(text) else ""))
             await asyncio.sleep(0.04)
         await msg.edit(text)
-
     elif mode == 'slow':
         msg = await e.edit("▌")
         shown = ""
@@ -835,7 +837,6 @@ async def type_cmd(e):
             pause = 0.3 if ch in '.!?…' else 0.12 if ch in ',;:' else 0.07
             await asyncio.sleep(pause)
         await msg.edit(text)
-
     elif mode == 'matrix':
         CHARS = string.ascii_letters + string.digits + "@#%&"
         msg = await e.edit("▓" * len(text))
@@ -846,7 +847,6 @@ async def type_cmd(e):
             await msg.edit(''.join(parts))
             await asyncio.sleep(0.07)
         await msg.edit(text)
-
     elif mode == 'glitch':
         GLITCH = "░▒▓█▄▀■□▪▫"
         msg = await e.edit("".join(random.choice(GLITCH) for _ in text))
@@ -858,7 +858,6 @@ async def type_cmd(e):
             await msg.edit(glitched)
             await asyncio.sleep(0.12)
         await msg.edit(text)
-
     else:
         msg = await e.edit("▌")
         shown = ""
@@ -1075,7 +1074,6 @@ async def notes_cmd(e):
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v)>40 else ''}_" for k,v in d.items())
     await e.edit(f"📝 **Заметки ({len(d)}):**\n\n{items}")
 
-# TODO
 @client.on(events.NewMessage(pattern=r'/todo (.+)', from_users='me'))
 async def todo_add_cmd(e):
     task = e.pattern_match.group(1).strip()
@@ -1242,10 +1240,25 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. СПРАВКА С КАТЕГОРИЯМИ И КНОПКАМИ
+# 10. СПРАВКА И ПОЛУЧЕНИЕ СТРОКИ СЕССИИ
 # ════════════════════════════════════════════════════════════
 
-# Словарь команд по категориям (для отображения и формирования кнопок)
+# Команда для получения строки сессии (только если используется StringSession)
+@client.on(events.NewMessage(pattern=r'/getsession$', from_users='me'))
+async def getsession_cmd(e):
+    if isinstance(client.session, StringSession):
+        session_str = client.session.save()
+        await e.edit(f"📌 **Ваша строка сессии:**\n\n`{session_str}`\n\nСохраните её в переменную `STRING_SESSION` на сервере.")
+    else:
+        await e.edit(
+            "ℹ️ Вы используете файловую сессию.\n\n"
+            "Чтобы получить строку сессии, выполните следующие шаги:\n"
+            "1. Запустите бота локально с переменной `STRING_SESSION` (можно временно).\n"
+            "2. Затем выполните `/getsession`.\n"
+            "3. Скопируйте строку и установите её как переменную окружения на сервере."
+        )
+
+# Список категорий и справка
 COMMANDS_LIST = {
     'основные': [
         '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
@@ -1277,7 +1290,6 @@ COMMANDS_LIST = {
     'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
 }
 
-# Детальные описания для /help <категория>
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ (10 команд)**\n\n"
@@ -1372,6 +1384,7 @@ HELP_CATS = {
     ),
 }
 
+# Обработчик /help – теперь выводит список категорий в виде кнопок
 @client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
@@ -1382,50 +1395,41 @@ async def help_cmd(e):
         await e.edit(f"❌ Категория `{cat}` не найдена.\nДоступные: `{', '.join(HELP_CATS)}`")
         return
 
-    # Формируем текст с категориями и списком команд
-    lines = ["📋 **Все команды UserBot**\n"]
     emoji_map = {
         'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
         'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
     }
-    for category, cmds in COMMANDS_LIST.items():
+    lines = ["📚 **Доступные категории справки:**\n"]
+    buttons = []
+    for category in HELP_CATS.keys():
         emoji = emoji_map.get(category, '•')
-        lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
-    lines.append("\nℹ️ Нажмите на кнопку с командой, чтобы вставить её в поле ввода.")
-    text = "\n".join(lines)
+        lines.append(f"{emoji} **{category.capitalize()}**")
+        cmd_text = f"/help {category}"
+        buttons.append(Button.switch_inline(cmd_text, query=cmd_text, same_peer=True))
 
-    # Все команды для кнопок (без дублирования, т.к. каждая команда только в одной категории)
-    all_cmds = []
-    for cmds in COMMANDS_LIST.values():
-        all_cmds.extend(cmds)
-
-    # Создаём кнопки с помощью Button.switch_inline
-    buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
-    rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-
+    text = "\n".join(lines) + "\n\nℹ️ Нажмите на кнопку, чтобы вставить команду `/help категория` в поле ввода."
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     await e.edit(text, buttons=rows)
     bump_stat('cmds')
 
+# Обработчик /commands – выводит все команды в виде кнопок
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
-    # Аналогично /help без аргументов
-    lines = ["📋 **Все команды UserBot**\n"]
+    all_cmds = []
+    for cmds in COMMANDS_LIST.values():
+        all_cmds.extend(cmds)
     emoji_map = {
         'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
         'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊'
     }
+    lines = ["📋 **Все команды UserBot**\n"]
     for category, cmds in COMMANDS_LIST.items():
         emoji = emoji_map.get(category, '•')
         lines.append(f"{emoji} **{category.capitalize()}**: {', '.join(cmds)}")
     lines.append("\nℹ️ Нажмите на кнопку с командой, чтобы вставить её в поле ввода.")
     text = "\n".join(lines)
-
-    all_cmds = []
-    for cmds in COMMANDS_LIST.values():
-        all_cmds.extend(cmds)
     buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
     rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-
     await e.edit(text, buttons=rows)
     bump_stat('cmds')
 
