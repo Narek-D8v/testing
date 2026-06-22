@@ -19,12 +19,9 @@ from telethon import TelegramClient, events, utils
 from telethon.tl.types import (
     InputMediaDice, MessageEntityMentionName,
     ChannelParticipantsAdmins, ChannelParticipantsBots,
-    ReactionEmoji,
-    KeyboardButtonCopy,           # для кнопок копирования
-    ReplyInlineMarkup,
-    KeyboardButtonRow,
+    ReactionEmoji
 )
-from telethon.tl.custom import Button
+from telethon.tl.custom import Button  # для switch_inline кнопок
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
@@ -1250,23 +1247,41 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. HELP — НОВАЯ РЕАЛИЗАЦИЯ С КНОПКАМИ ДЛЯ КОПИРОВАНИЯ
+# 10. HELP – РАБОЧАЯ ВЕРСИЯ С BUTTON.SWITCH_INLINE
 # ════════════════════════════════════════════════════════════
 
-# ─── Вспомогательная функция: строим copy-кнопки ────────────────
-def make_copy_markup(items: list[tuple[str, str]], cols: int = 2):
-    """
-    items: список (label, text_to_copy)
-    cols:  кнопок в ряду
-    """
-    flat = [KeyboardButtonCopy(text=label, copy_text=copy) for label, copy in items]
-    rows = [
-        KeyboardButtonRow(buttons=flat[i:i+cols])
-        for i in range(0, len(flat), cols)
-    ]
-    return ReplyInlineMarkup(rows=rows)
+# Данные о категориях и командах
+COMMANDS_LIST = {
+    'основные': [
+        '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
+        '/id', '/info', '/restart', '/ghost', '/resetdata'
+    ],
+    'профиль': [
+        '/me', '/avatar', '/name', '/lastname', '/bio', '/whois', '/username_check'
+    ],
+    'игры': [
+        '/dice', '/dart', '/basket', '/football', '/bowling', '/casino',
+        '/coin', '/rand', '/8ball', '/rps', '/slot', '/lucky', '/choose', '/quiz'
+    ],
+    'утилиты': [
+        '/calc', '/remind', '/search', '/shorten', '/weather', '/translate',
+        '/base64', '/hash', '/morse', '/caesar', '/vigenere', '/password',
+        '/qr', '/uuid', '/color', '/ascii'
+    ],
+    'сообщения': [
+        '/type', '/echo', '/say', '/bold', '/italic', '/mono',
+        '/clean', '/purge', '/spam', '/forward', '/pin', '/unpin',
+        '/copyall', '/react'
+    ],
+    'заметки': [
+        '/save', '/get', '/del', '/list',
+        '/note', '/getnote', '/delnote', '/notes',
+        '/todo', '/todos', '/done', '/undone', '/deltodo'
+    ],
+    'afk': ['/afk', '/unafk'],
+    'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
+}
 
-# ─── Данные для справки ────────────────────────────────────
 EMOJI_MAP = {
     'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
     'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊',
@@ -1286,20 +1301,7 @@ HELP_CATS = {
         "`/restart` — перезапуск\n"
         "`/ghost` — ghost-режим\n"
         "`/resetdata` — сброс всех данных ⚠️\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("💤 /sleep",    "/sleep"),
-            ("☀️ /wake",     "/wake"),
-            ("✏️ /setreply", "/setreply "),
-            ("📊 /status",   "/status"),
-            ("🕐 /time",     "/time"),
-            ("🏓 /ping",     "/ping"),
-            ("🆔 /id",       "/id"),
-            ("ℹ️ /info",     "/info"),
-            ("🔄 /restart",  "/restart"),
-            ("👻 /ghost",    "/ghost"),
-            ("🗑 /resetdata","/resetdata"),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'профиль': (
         "👤 **ПРОФИЛЬ**\n\n"
@@ -1310,16 +1312,7 @@ HELP_CATS = {
         "`/bio [текст]` — обновить «о себе»\n"
         "`/whois @ник` — инфо о пользователе\n"
         "`/username_check @ник` — проверить username\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("👤 /me",              "/me"),
-            ("🖼 /avatar",          "/avatar"),
-            ("✏️ /name",            "/name "),
-            ("✏️ /lastname",        "/lastname "),
-            ("📝 /bio",             "/bio "),
-            ("🔍 /whois",           "/whois "),
-            ("🔎 /username_check",  "/username_check "),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'игры': (
         "🎮 **ИГРЫ И РАЗВЛЕЧЕНИЯ**\n\n"
@@ -1332,23 +1325,7 @@ HELP_CATS = {
         "`/lucky` — индекс удачи\n"
         "`/choose [вар1 | вар2]` — случайный выбор\n"
         "`/quiz` — викторина\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("🎲 /dice",    "/dice"),
-            ("🎯 /dart",    "/dart"),
-            ("🏀 /basket",  "/basket"),
-            ("⚽ /football","/football"),
-            ("🎳 /bowling", "/bowling"),
-            ("🎰 /casino",  "/casino"),
-            ("🪙 /coin",    "/coin"),
-            ("🔢 /rand",    "/rand"),
-            ("🎱 /8ball",   "/8ball "),
-            ("✂️ /rps",     "/rps "),
-            ("🎰 /slot",    "/slot"),
-            ("🍀 /lucky",   "/lucky"),
-            ("🤔 /choose",  "/choose "),
-            ("❓ /quiz",    "/quiz"),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'утилиты': (
         "🛠 **УТИЛИТЫ**\n\n"
@@ -1368,25 +1345,7 @@ HELP_CATS = {
         "`/uuid` — UUID v4\n"
         "`/color [#HEX или R,G,B]`\n"
         "`/ascii [текст]`\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("🧮 /calc",      "/calc "),
-            ("⏰ /remind",    "/remind "),
-            ("🔍 /search",    "/search "),
-            ("🔗 /shorten",   "/shorten "),
-            ("🌤 /weather",   "/weather "),
-            ("🌐 /translate", "/translate "),
-            ("🔐 /base64",    "/base64 encode "),
-            ("#️⃣ /hash",      "/hash "),
-            ("📡 /morse",     "/morse "),
-            ("🔒 /caesar",    "/caesar encode "),
-            ("🔑 /vigenere",  "/vigenere encode "),
-            ("🔏 /password",  "/password 16"),
-            ("📷 /qr",        "/qr "),
-            ("🆔 /uuid",      "/uuid"),
-            ("🎨 /color",     "/color "),
-            ("🔣 /ascii",     "/ascii "),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'сообщения': (
         "✉️ **СООБЩЕНИЯ**\n\n"
@@ -1400,55 +1359,20 @@ HELP_CATS = {
         "`/pin` / `/unpin`\n"
         "`/copyall [n] [chat_id]`\n"
         "`/react [эмодзи]`\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("⌨️ /type",    "/type fast "),
-            ("📢 /echo",    "/echo "),
-            ("🗣 /say",     "/say "),
-            ("𝗕 /bold",     "/bold "),
-            ("𝘐 /italic",   "/italic "),
-            ("📟 /mono",    "/mono "),
-            ("🧹 /clean",   "/clean 10"),
-            ("🗑 /purge",   "/purge 10"),
-            ("📨 /spam",    "/spam 3 "),
-            ("↪️ /forward", "/forward "),
-            ("📌 /pin",     "/pin"),
-            ("📍 /unpin",   "/unpin"),
-            ("📋 /copyall", "/copyall 10 "),
-            ("❤️ /react",   "/react "),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'заметки': (
         "📦 **ЗАМЕТКИ И TODO**\n\n"
         "**Хранилище:** `/save` `/get` `/del` `/list`\n"
         "**Заметки:** `/note` `/getnote` `/delnote` `/notes`\n"
         "**TODO:** `/todo` `/todos` `/done` `/undone` `/deltodo`\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("💾 /save",    "/save "),
-            ("📤 /get",     "/get "),
-            ("❌ /del",     "/del "),
-            ("📋 /list",    "/list"),
-            ("📝 /note",    "/note "),
-            ("📖 /getnote", "/getnote 1"),
-            ("🗑 /delnote", "/delnote 1"),
-            ("📚 /notes",   "/notes"),
-            ("✅ /todo",    "/todo "),
-            ("📋 /todos",   "/todos"),
-            ("☑️ /done",    "/done 1"),
-            ("↩️ /undone",  "/undone 1"),
-            ("🗑 /deltodo", "/deltodo 1"),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'afk': (
         "😴 **AFK**\n\n"
         "`/afk [причина]` — включить AFK-режим\n"
         "`/unafk` — выключить с отчётом времени\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("😴 /afk",   "/afk "),
-            ("✅ /unafk", "/unafk"),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
     'инфо': (
         "📊 **ИНФОРМАЦИЯ О ЧАТЕ**\n\n"
@@ -1457,21 +1381,10 @@ HELP_CATS = {
         "`/admins` — список администраторов\n"
         "`/top [n]` — топ активных\n"
         "`/bots` — список ботов\n\n"
-        "👇 Нажми на команду — она скопируется:",
-        [
-            ("🏠 /chatinfo", "/chatinfo"),
-            ("👥 /members",  "/members"),
-            ("👑 /admins",   "/admins"),
-            ("🏆 /top",      "/top 10"),
-            ("🤖 /bots",     "/bots"),
-        ]
+        "👇 Нажми на команду — она вставится в поле ввода:"
     ),
 }
 
-# Для быстрого доступа /commands будет использовать те же данные
-COMMANDS_LIST = {cat: [copy for _, copy in data[1] if copy.strip()] for cat, data in HELP_CATS.items()}
-
-# ─── Обработчики /help и /commands ─────────────────────────
 @client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
@@ -1483,33 +1396,36 @@ async def help_cmd(e):
             bump_stat('cmds')
             return
 
-        text, buttons_data = HELP_CATS[cat]
-        markup = make_copy_markup(buttons_data, cols=2)
-        await e.edit(text, buttons=markup)
+        text = HELP_CATS[cat]
+        # Собираем кнопки для команд из этой категории
+        buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in COMMANDS_LIST[cat]]
+        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
+        await e.edit(text, buttons=rows)
         bump_stat('cmds')
         return
 
-    # Главное меню — кнопки копируют "/help категория"
-    total = sum(len(v[1]) for v in HELP_CATS.values())
-    lines = [f"📚 **UserBot Help** · {total} команд\n", "Выбери категорию — нажми, скопируй, отправь:\n"]
-    items = [
-        (f"{EMOJI_MAP.get(cat, '•')} {cat.capitalize()}", f"/help {cat}")
-        for cat in HELP_CATS
-    ]
-    markup = make_copy_markup(items, cols=2)
-    await e.edit("\n".join(lines), buttons=markup)
+    # Главное меню – кнопки с /help категория
+    lines = ["📚 **UserBot Help**\nВыбери категорию:\n"]
+    buttons = []
+    for cat in HELP_CATS:
+        emoji = EMOJI_MAP.get(cat, '•')
+        label = f"{emoji} {cat.capitalize()}"
+        cmd = f"/help {cat}"
+        buttons.append(Button.switch_inline(label, query=cmd, same_peer=True))
+
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    await e.edit("\n".join(lines), buttons=rows)
     bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
-    all_items = []
-    for cat, (_, buttons_data) in HELP_CATS.items():
-        for label, copy in buttons_data:
-            all_items.append((label, copy))
-
-    markup = make_copy_markup(all_items, cols=3)
-    total = len(all_items)
-    await e.edit(f"📋 **Все команды** · {total} шт.\nНажми — скопируется:", buttons=markup)
+    all_cmds = []
+    for cmds in COMMANDS_LIST.values():
+        all_cmds.extend(cmds)
+    buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
+    rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
+    total = len(all_cmds)
+    await e.edit(f"📋 **Все команды** · {total} шт.\nНажми — вставится в поле ввода:", buttons=rows)
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
