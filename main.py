@@ -21,7 +21,6 @@ from telethon.tl.types import (
     ChannelParticipantsAdmins, ChannelParticipantsBots,
     ReactionEmoji
 )
-from telethon.tl.custom import Button  # для switch_inline кнопок
 from telethon.tl.functions.messages import SendReactionRequest, GetHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
@@ -1247,7 +1246,7 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. HELP – РАБОЧАЯ ВЕРСИЯ С BUTTON.SWITCH_INLINE
+# 10. HELP – ТЕКСТОВАЯ ВЕРСИЯ ДЛЯ КОПИРОВАНИЯ
 # ════════════════════════════════════════════════════════════
 
 # Данные о категориях и командах
@@ -1287,6 +1286,7 @@ EMOJI_MAP = {
     'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊',
 }
 
+# Детальные описания для каждой категории
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ КОМАНДЫ**\n\n"
@@ -1300,8 +1300,7 @@ HELP_CATS = {
         "`/info` — информация о боте\n"
         "`/restart` — перезапуск\n"
         "`/ghost` — ghost-режим\n"
-        "`/resetdata` — сброс всех данных ⚠️\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/resetdata` — сброс всех данных ⚠️"
     ),
     'профиль': (
         "👤 **ПРОФИЛЬ**\n\n"
@@ -1311,8 +1310,7 @@ HELP_CATS = {
         "`/lastname [фамилия]` — сменить фамилию\n"
         "`/bio [текст]` — обновить «о себе»\n"
         "`/whois @ник` — инфо о пользователе\n"
-        "`/username_check @ник` — проверить username\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/username_check @ник` — проверить username"
     ),
     'игры': (
         "🎮 **ИГРЫ И РАЗВЛЕЧЕНИЯ**\n\n"
@@ -1324,8 +1322,7 @@ HELP_CATS = {
         "`/slot` — слот-машина\n"
         "`/lucky` — индекс удачи\n"
         "`/choose [вар1 | вар2]` — случайный выбор\n"
-        "`/quiz` — викторина\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/quiz` — викторина"
     ),
     'утилиты': (
         "🛠 **УТИЛИТЫ**\n\n"
@@ -1344,8 +1341,7 @@ HELP_CATS = {
         "`/qr [текст]` — QR-код\n"
         "`/uuid` — UUID v4\n"
         "`/color [#HEX или R,G,B]`\n"
-        "`/ascii [текст]`\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/ascii [текст]`"
     ),
     'сообщения': (
         "✉️ **СООБЩЕНИЯ**\n\n"
@@ -1358,21 +1354,18 @@ HELP_CATS = {
         "`/forward [chat_id]`\n"
         "`/pin` / `/unpin`\n"
         "`/copyall [n] [chat_id]`\n"
-        "`/react [эмодзи]`\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/react [эмодзи]`"
     ),
     'заметки': (
         "📦 **ЗАМЕТКИ И TODO**\n\n"
         "**Хранилище:** `/save` `/get` `/del` `/list`\n"
         "**Заметки:** `/note` `/getnote` `/delnote` `/notes`\n"
-        "**TODO:** `/todo` `/todos` `/done` `/undone` `/deltodo`\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "**TODO:** `/todo` `/todos` `/done` `/undone` `/deltodo`"
     ),
     'afk': (
         "😴 **AFK**\n\n"
         "`/afk [причина]` — включить AFK-режим\n"
-        "`/unafk` — выключить с отчётом времени\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/unafk` — выключить с отчётом времени"
     ),
     'инфо': (
         "📊 **ИНФОРМАЦИЯ О ЧАТЕ**\n\n"
@@ -1380,8 +1373,7 @@ HELP_CATS = {
         "`/members` — количество участников\n"
         "`/admins` — список администраторов\n"
         "`/top [n]` — топ активных\n"
-        "`/bots` — список ботов\n\n"
-        "👇 Нажми на команду — она вставится в поле ввода:"
+        "`/bots` — список ботов"
     ),
 }
 
@@ -1392,40 +1384,41 @@ async def help_cmd(e):
     if cat:
         if cat not in HELP_CATS:
             cats = '  |  '.join(f"`/help {c}`" for c in HELP_CATS)
-            await e.edit(f"❌ Категория `{cat}` не найдена.\n\n{cats}")
+            await e.edit(f"❌ Категория `{cat}` не найдена.\n\nДоступные категории:\n{cats}")
             bump_stat('cmds')
             return
 
         text = HELP_CATS[cat]
-        # Собираем кнопки для команд из этой категории
-        buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in COMMANDS_LIST[cat]]
-        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
-        await e.edit(text, buttons=rows)
+        cmds = COMMANDS_LIST.get(cat, [])
+        if cmds:
+            text += "\n\n📋 **Команды для копирования:**\n" + "\n".join(f"`{cmd}`" for cmd in cmds)
+        await e.edit(text)
         bump_stat('cmds')
         return
 
-    # Главное меню – кнопки с /help категория
-    lines = ["📚 **UserBot Help**\nВыбери категорию:\n"]
-    buttons = []
+    # Главное меню
+    lines = ["📚 **UserBot Help**\n\nВыбери категорию — скопируй команду и отправь:\n"]
     for cat in HELP_CATS:
         emoji = EMOJI_MAP.get(cat, '•')
-        label = f"{emoji} {cat.capitalize()}"
-        cmd = f"/help {cat}"
-        buttons.append(Button.switch_inline(label, query=cmd, same_peer=True))
-
-    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    await e.edit("\n".join(lines), buttons=rows)
+        lines.append(f"{emoji} `{cat.capitalize()}` → `/help {cat}`")
+    lines.append("\n💡 Или просто `/commands` — все команды списком.")
+    await e.edit("\n".join(lines))
     bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
 async def commands_cmd(e):
     all_cmds = []
-    for cmds in COMMANDS_LIST.values():
+    for cat, cmds in COMMANDS_LIST.items():
         all_cmds.extend(cmds)
-    buttons = [Button.switch_inline(cmd, query=cmd, same_peer=True) for cmd in all_cmds]
-    rows = [buttons[i:i+4] for i in range(0, len(buttons), 4)]
-    total = len(all_cmds)
-    await e.edit(f"📋 **Все команды** · {total} шт.\nНажми — вставится в поле ввода:", buttons=rows)
+    all_cmds = sorted(set(all_cmds))
+    lines = ["📋 **Все команды UserBot**\n\n"]
+    for cat, cmds in COMMANDS_LIST.items():
+        emoji = EMOJI_MAP.get(cat, '•')
+        lines.append(f"{emoji} **{cat.capitalize()}**:")
+        for cmd in cmds:
+            lines.append(f"   `{cmd}`")
+        lines.append("")
+    await e.edit("\n".join(lines))
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
