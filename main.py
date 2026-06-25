@@ -27,7 +27,13 @@ from flask import Flask
 from threading import Thread
 
 # ─── ИМПОРТ RP-КОМАНД ──────────────────────────────────────
-from rp_commands import RP_COMMANDS, get_all_rp_commands, get_category_commands, get_all_categories
+try:
+    from rp_commands import RP_COMMANDS, get_all_rp_commands, get_category_commands, get_all_categories
+except ImportError:
+    print("❌ Файл rp_commands.py не найден! Убедитесь, что он лежит рядом.")
+    RP_COMMANDS = {}
+    def get_all_categories(): return []
+    def get_category_commands(cat): return []
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -186,7 +192,7 @@ def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
 # ════════════════════════════════════════════════════════════
-# 1. ОСНОВНЫЕ КОМАНДЫ
+# 1. ОСНОВНЫЕ КОМАНДЫ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА)
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(pattern=r'/sleep$', from_users='me'))
@@ -1249,10 +1255,9 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. HELP – ТЕКСТОВАЯ ВЕРСИЯ ДЛЯ КОПИРОВАНИЯ (С RP)
+# 10. HELP (с категорией RP)
 # ════════════════════════════════════════════════════════════
 
-# Данные о категориях и командах (добавлена RP)
 COMMANDS_LIST = {
     'основные': [
         '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
@@ -1282,7 +1287,7 @@ COMMANDS_LIST = {
     ],
     'afk': ['/afk', '/unafk'],
     'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
-    'rp': ['/rphelp'],  # добавили RP команду в справку
+    'rp': ['/rphelp'],
 }
 
 EMOJI_MAP = {
@@ -1291,7 +1296,6 @@ EMOJI_MAP = {
     'rp': '🎭',
 }
 
-# Детальные описания для каждой категории (добавлена RP)
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ КОМАНДЫ**\n\n"
@@ -1410,7 +1414,6 @@ async def help_cmd(e):
         bump_stat('cmds')
         return
 
-    # Главное меню
     lines = ["📚 **UserBot Help**\n\nВыбери категорию — скопируй команду и отправь:\n"]
     for cat in HELP_CATS:
         emoji = EMOJI_MAP.get(cat, '•')
@@ -1436,71 +1439,69 @@ async def commands_cmd(e):
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
-# 11. RP-КОМАНДЫ
+# 11. RP-КОМАНДЫ (ДЛЯ ВСЕХ В ЛС)
 # ════════════════════════════════════════════════════════════
 
-# Вспомогательные функции для форматирования RP-действий
-def format_rp_action(action_key, user_name, target_name):
-    if action_key not in RP_COMMANDS:
-        return None
-    cmd = RP_COMMANDS[action_key]
-    text = cmd['text'].format(user=user_name, target=target_name)
-    emoji = cmd['emoji']
-    return f"{emoji} {text}"
-
-def get_rp_reply(action_key):
-    if action_key not in RP_COMMANDS:
-        return "Ты что делаешь?!"
-    return RP_COMMANDS[action_key]['reply']
-
-# Обработчик входящих ЛС (переопределяем, чтобы добавить RP)
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
-async def incoming_handler(event):
-    """Обработчик входящих ЛС: AFK, автоответчик и RP-команды"""
+async def rp_handler(event):
+    sender = await event.get_sender()
+    if not sender or sender.bot:
+        return
+    if not event.reply_to_msg_id:
+        return
+    reply_msg = await event.get_reply_message()
+    if not reply_msg or not reply_msg.sender_id:
+        return
+    text = event.raw_text.strip().lower()
+    if text not in RP_COMMANDS:
+        return
+
+    try:
+        target_entity = await event.client.get_entity(reply_msg.sender_id)
+        target_name = target_entity.first_name or "пользователь"
+    except:
+        target_name = "пользователь"
+
+    user_name = sender.first_name or "Кто-то"
+    cmd = RP_COMMANDS[text]
+    action_text = cmd['text'].format(user=user_name, target=target_name)
+    reply_text = cmd['reply']
+    await event.reply(f"{cmd['emoji']} {action_text}\n\n{reply_text}")
+    logger.info(f"RP: {user_name} -> {target_name}: {text}")
+    bump_stat('cmds')
+
+# ─── AFK и автоответчик ──────────────────────────────────
+reply_cooldown = defaultdict(float)
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def afk_auto_reply_handler(event):
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
     uid = event.sender_id
     now = time.time()
 
-    # ─── RP-КОМАНДЫ (приоритет) ──────────────────────────────
-    if event.reply_to_msg_id:
-        reply_msg = await event.get_reply_message()
-        if reply_msg and reply_msg.sender_id:
-            text = event.raw_text.strip().lower()
-            if text in RP_COMMANDS:
-                # Получаем имена
-                target_entity = await event.client.get_entity(reply_msg.sender_id)
-                target_name = target_entity.first_name or "пользователь"
-                user_name = sender.first_name or "Кто-то"
-                # Форматируем действие
-                action_text = format_rp_action(text, user_name, target_name)
-                reply_text = get_rp_reply(text)
-                # Отправляем ответ
-                await event.reply(f"{action_text}\n\n{reply_text}")
-                return  # Не обрабатываем AFK/автоответчик
+    text = event.raw_text.strip().lower()
+    if text in RP_COMMANDS and event.reply_to_msg_id:
+        return  # уже обработано
 
-    # ─── AFK ────────────────────────────────────────────────────
     if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
         dur = fmt_time(now - state.afk_start_time)
         reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
         reply_cooldown[f'afk_{uid}'] = now
         await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
 
-    # ─── АВТООТВЕТЧИК ──────────────────────────────────────────
     if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_cooldown[uid] = now
         await asyncio.sleep(1)
         await event.reply(state.auto_reply_text)
 
-# ─── КОМАНДА /rphelp (для всех в ЛС) ──────────────────────
+# ─── КОМАНДА /rphelp ──────────────────────────────────────
 @client.on(events.NewMessage(pattern=r'^/rphelp$', incoming=True, func=lambda e: e.is_private))
 async def rphelp_cmd(event):
-    """Показывает список доступных RP-команд по категориям"""
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
-
     lines = ["📚 **Доступные RP-команды**\n"]
     for category in get_all_categories():
         cmds = get_category_commands(category)
