@@ -1249,10 +1249,10 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. HELP – ТЕКСТОВАЯ ВЕРСИЯ ДЛЯ КОПИРОВАНИЯ
+# 10. HELP – ТЕКСТОВАЯ ВЕРСИЯ ДЛЯ КОПИРОВАНИЯ (С RP)
 # ════════════════════════════════════════════════════════════
 
-# Данные о категориях и командах
+# Данные о категориях и командах (добавлена RP)
 COMMANDS_LIST = {
     'основные': [
         '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
@@ -1282,14 +1282,16 @@ COMMANDS_LIST = {
     ],
     'afk': ['/afk', '/unafk'],
     'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
+    'rp': ['/rphelp'],  # добавили RP команду в справку
 }
 
 EMOJI_MAP = {
     'основные': '⚙️', 'профиль': '👤', 'игры': '🎮', 'утилиты': '🛠',
     'сообщения': '✉️', 'заметки': '📦', 'afk': '😴', 'инфо': '📊',
+    'rp': '🎭',
 }
 
-# Детальные описания для каждой категории
+# Детальные описания для каждой категории (добавлена RP)
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ КОМАНДЫ**\n\n"
@@ -1378,6 +1380,15 @@ HELP_CATS = {
         "`/top [n]` — топ активных\n"
         "`/bots` — список ботов"
     ),
+    'rp': (
+        "🎭 **RP-КОМАНДЫ (ролевые)**\n\n"
+        "Вы можете выполнять ролевые действия, отвечая (реплаем) на сообщение пользователя в ЛС.\n"
+        "Напишите в ответ одно слово из списка ниже – бот отправит действие с эмодзи и репликой.\n\n"
+        "**Полный список команд:** `/rphelp`\n\n"
+        "**Пример:** ответьте на сообщение `обнять` – бот пришлёт действие с вашим именем и именем автора.\n\n"
+        "**Категории:**\n"
+        f"{chr(10).join(f'• {cat.capitalize()}: {", ".join(get_category_commands(cat))}' for cat in get_all_categories())}"
+    ),
 }
 
 @client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
@@ -1425,12 +1436,11 @@ async def commands_cmd(e):
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
-# 11. RP-КОМАНДЫ (НОВЫЙ БЛОК)
+# 11. RP-КОМАНДЫ
 # ════════════════════════════════════════════════════════════
 
 # Вспомогательные функции для форматирования RP-действий
 def format_rp_action(action_key, user_name, target_name):
-    """Форматирует RP действие из rp_commands"""
     if action_key not in RP_COMMANDS:
         return None
     cmd = RP_COMMANDS[action_key]
@@ -1439,19 +1449,11 @@ def format_rp_action(action_key, user_name, target_name):
     return f"{emoji} {text}"
 
 def get_rp_reply(action_key):
-    """Возвращает ответ на RP действие"""
     if action_key not in RP_COMMANDS:
         return "Ты что делаешь?!"
     return RP_COMMANDS[action_key]['reply']
 
 # Обработчик входящих ЛС (переопределяем, чтобы добавить RP)
-# Для этого мы заменим старый обработчик, убрав дублирование.
-# Важно: в этом файле уже есть обработчик incoming_handler для AFK и автоответчика.
-# Мы заменим его на новый, который включает RP-логику.
-
-# Удаляем старый обработчик, если он был определён ранее (он был в конце файла).
-# Но мы сейчас переопределим его, поэтому предыдущий будет перезаписан.
-
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def incoming_handler(event):
     """Обработчик входящих ЛС: AFK, автоответчик и RP-команды"""
@@ -1504,7 +1506,6 @@ async def rphelp_cmd(event):
         cmds = get_category_commands(category)
         if cmds:
             lines.append(f"\n**{category.upper()}**:")
-            # Группируем по 4 в строку для компактности
             for i in range(0, len(cmds), 4):
                 chunk = cmds[i:i+4]
                 lines.append("  " + "  ".join(f"`{c}`" for c in chunk))
