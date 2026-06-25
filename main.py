@@ -26,6 +26,9 @@ from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
 from threading import Thread
 
+# ─── ИМПОРТ RP-КОМАНД ──────────────────────────────────────
+from rp_commands import RP_COMMANDS, get_all_rp_commands, get_category_commands, get_all_categories
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
 API_ID  = os.environ.get('API_ID')
 API_HASH = os.environ.get('API_HASH')
 PORT = int(os.environ.get('PORT', 8080))
-STRING_SESSION = os.environ.get('STRING_SESSION')  # если задана, используем её
+STRING_SESSION = os.environ.get('STRING_SESSION')
 
 DATA_FILE  = 'userbot_data.json'
 SAVED_FILE = 'saved_data.json'
@@ -1422,36 +1425,99 @@ async def commands_cmd(e):
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
-# 11. ВХОДЯЩИЕ СООБЩЕНИЯ (автоответчик + AFK)
+# 11. RP-КОМАНДЫ (НОВЫЙ БЛОК)
 # ════════════════════════════════════════════════════════════
 
-reply_cooldown = defaultdict(float)
+# Вспомогательные функции для форматирования RP-действий
+def format_rp_action(action_key, user_name, target_name):
+    """Форматирует RP действие из rp_commands"""
+    if action_key not in RP_COMMANDS:
+        return None
+    cmd = RP_COMMANDS[action_key]
+    text = cmd['text'].format(user=user_name, target=target_name)
+    emoji = cmd['emoji']
+    return f"{emoji} {text}"
+
+def get_rp_reply(action_key):
+    """Возвращает ответ на RP действие"""
+    if action_key not in RP_COMMANDS:
+        return "Ты что делаешь?!"
+    return RP_COMMANDS[action_key]['reply']
+
+# Обработчик входящих ЛС (переопределяем, чтобы добавить RP)
+# Для этого мы заменим старый обработчик, убрав дублирование.
+# Важно: в этом файле уже есть обработчик incoming_handler для AFK и автоответчика.
+# Мы заменим его на новый, который включает RP-логику.
+
+# Удаляем старый обработчик, если он был определён ранее (он был в конце файла).
+# Но мы сейчас переопределим его, поэтому предыдущий будет перезаписан.
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def incoming_handler(event):
+    """Обработчик входящих ЛС: AFK, автоответчик и RP-команды"""
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
     uid = event.sender_id
     now = time.time()
 
+    # ─── RP-КОМАНДЫ (приоритет) ──────────────────────────────
+    if event.reply_to_msg_id:
+        reply_msg = await event.get_reply_message()
+        if reply_msg and reply_msg.sender_id:
+            text = event.raw_text.strip().lower()
+            if text in RP_COMMANDS:
+                # Получаем имена
+                target_entity = await event.client.get_entity(reply_msg.sender_id)
+                target_name = target_entity.first_name or "пользователь"
+                user_name = sender.first_name or "Кто-то"
+                # Форматируем действие
+                action_text = format_rp_action(text, user_name, target_name)
+                reply_text = get_rp_reply(text)
+                # Отправляем ответ
+                await event.reply(f"{action_text}\n\n{reply_text}")
+                return  # Не обрабатываем AFK/автоответчик
+
+    # ─── AFK ────────────────────────────────────────────────────
     if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
         dur = fmt_time(now - state.afk_start_time)
         reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
         reply_cooldown[f'afk_{uid}'] = now
         await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
 
+    # ─── АВТООТВЕТЧИК ──────────────────────────────────────────
     if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_cooldown[uid] = now
         await asyncio.sleep(1)
         await event.reply(state.auto_reply_text)
 
+# ─── КОМАНДА /rphelp (для всех в ЛС) ──────────────────────
+@client.on(events.NewMessage(pattern=r'^/rphelp$', incoming=True, func=lambda e: e.is_private))
+async def rphelp_cmd(event):
+    """Показывает список доступных RP-команд по категориям"""
+    sender = await event.get_sender()
+    if not sender or sender.bot:
+        return
+
+    lines = ["📚 **Доступные RP-команды**\n"]
+    for category in get_all_categories():
+        cmds = get_category_commands(category)
+        if cmds:
+            lines.append(f"\n**{category.upper()}**:")
+            # Группируем по 4 в строку для компактности
+            for i in range(0, len(cmds), 4):
+                chunk = cmds[i:i+4]
+                lines.append("  " + "  ".join(f"`{c}`" for c in chunk))
+    lines.append("\n💡 Используй: `команда` в ответ на сообщение пользователя")
+    await event.reply("\n".join(lines))
+    bump_stat('cmds')
+
 # ════════════════════════════════════════════════════════════
-# ЗАПУСК
+# 12. ЗАПУСК
 # ════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🚀 Запуск UserBot (71 команда)...")
+    print("🚀 Запуск UserBot (с RP-командами)...")
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ UserBot запущен!")
