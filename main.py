@@ -26,15 +26,6 @@ from telethon.tl.functions.account import UpdateProfileRequest
 from flask import Flask
 from threading import Thread
 
-# ─── ИМПОРТ RP-КОМАНД ──────────────────────────────────────
-try:
-    from rp_commands import RP_COMMANDS, get_all_rp_commands, get_category_commands, get_all_categories
-except ImportError:
-    print("❌ Файл rp_commands.py не найден! Убедитесь, что он лежит рядом.")
-    RP_COMMANDS = {}
-    def get_all_categories(): return []
-    def get_category_commands(cat): return []
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -50,7 +41,287 @@ NOTES_FILE = 'notes_data.json'
 TODOS_FILE = 'todos_data.json'
 STATS_FILE = 'stats_data.json'
 
-# ─── Класс для управления состоянием бота ────────────────
+# ════════════════════════════════════════════════════════════
+# RP-КОМАНДЫ (ВСТРОЕННЫЕ)
+# ════════════════════════════════════════════════════════════
+
+RP_COMMANDS = {
+    # ─── ИНТИМНЫЕ ДЕЙСТВИЯ ────────────────────────────────────
+    'поцеловать': {
+        'emoji': '😘',
+        'text': '{user} поцеловал(а) {target}',
+        'reply': 'О, мне это нравится!'
+    },
+    'обнять': {
+        'emoji': '🤗',
+        'text': '{user} обнял(а) {target}',
+        'reply': 'Спасибо за объятия!'
+    },
+    'засосать': {
+        'emoji': '💋',
+        'text': '{user} засосал(а) {target}',
+        'reply': 'Ммм...'
+    },
+    'отсосать': {
+        'emoji': '😗',
+        'text': '{user} отсосал(а) у {target}',
+        'reply': 'Ой!'
+    },
+    'отлизать': {
+        'emoji': '👅',
+        'text': '{user} отлизал(а) у {target}',
+        'reply': 'Ох!'
+    },
+    'лизнуть': {
+        'emoji': '👅',
+        'text': '{user} лизнул(а) {target} в интимное место',
+        'reply': 'Ахх!'
+    },
+    'прижать': {
+        'emoji': '🤌',
+        'text': '{user} прижал(а) {target} к стене и страстно поцеловал(а)',
+        'reply': '😳'
+    },
+    'связать': {
+        'emoji': '🪢',
+        'text': '{user} связал(а) {target} и начал(а) доминировать',
+        'reply': 'Не хочу!'
+    },
+    'раздеть': {
+        'emoji': '👗',
+        'text': '{user} страстно сорвал(а) одежду с {target}',
+        'reply': '😳😳'
+    },
+    'выебать': {
+        'emoji': '🔞',
+        'text': '{user} выебал(а) {target} до полного изнеможения',
+        'reply': '💫'
+    },
+    'вылизать': {
+        'emoji': '👅💦',
+        'text': '{user} вылизал(а) {target} до последней капли',
+        'reply': '😻'
+    },
+    'трахнуть': {
+        'emoji': '🍆🍑',
+        'text': '{user} жёстко трахнул(а) {target} во все дырочки',
+        'reply': 'Да! Да! Ещё!'
+    },
+    'насадить': {
+        'emoji': '🕳️',
+        'text': '{user} насадил(а) {target} на свой(ю) кол',
+        'reply': '😫'
+    },
+    'отыметь': {
+        'emoji': '😈💦',
+        'text': '{user} отымел(а) {target} как последнюю сучку',
+        'reply': 'Не останавливайся!'
+    },
+    'залезть': {
+        'emoji': '👙',
+        'text': '{user} залез(ла) в трусики к {target}',
+        'reply': '😳 Ты что делаешь?!'
+    },
+    'сесть': {
+        'emoji': '😈',
+        'text': '{user} сел(а) на лицо {target}',
+        'reply': 'Не мо-о-оргу дышать!'
+    },
+    'лап': {
+        'emoji': '🫴',
+        'text': '{user} полапал(а) {target} за интимные места',
+        'reply': 'Хихи, не щекочи!'
+    },
+
+    # ─── АГРЕССИВНЫЕ ДЕЙСТВИЯ ──────────────────────────────────
+    'ударить': {
+        'emoji': '👊',
+        'text': '{user} ударил(а) {target}',
+        'reply': 'Ай! Это больно!'
+    },
+    'кусь': {
+        'emoji': '💢',
+        'text': '{user} укусил(а) {target}',
+        'reply': 'Ауч! Не кусайся!'
+    },
+    'хрусь': {
+        'emoji': '🦴',
+        'text': '{user} похрустел(а) костяшками над {target}',
+        'reply': 'Ой, не пугай!'
+    },
+    'пнуть': {
+        'emoji': '👞',
+        'text': '{user} пнул(а) поджопника {target}',
+        'reply': 'Ы-ы-ы!'
+    },
+    'шлеп': {
+        'emoji': '✋',
+        'text': '{user} отшлепал(а) {target} за попку',
+        'reply': 'Хихи, не так сильно!'
+    },
+    'щелбан': {
+        'emoji': '👌',
+        'text': '{user} вдарил(а) смачного щелбана в лоб {target}',
+        'reply': 'Ой-ой-ой!'
+    },
+    'уебать': {
+        'emoji': '💥',
+        'text': '{user} уебал(а) {target}',
+        'reply': 'Угу, мне понравилось 😤'
+    },
+    'вмазать': {
+        'emoji': '🥊',
+        'text': '{user} вмазал(а) {target}',
+        'reply': 'Заслужил!'
+    },
+    'втащить': {
+        'emoji': '🥊',
+        'text': '{user} втащил(а) {target}',
+        'reply': 'Ты видел(а) это?'
+    },
+    'заехать': {
+        'emoji': '👊',
+        'text': '{user} заехал(а) по челюсти {target}',
+        'reply': 'Крови! Крови!'
+    },
+    'пощечина': {
+        'emoji': '🖐️',
+        'text': '{user} дал(а) пощёчину {target}',
+        'reply': 'Ну вот ещё!'
+    },
+    'толкнуть': {
+        'emoji': '🫳',
+        'text': '{user} толкнул(а) {target}',
+        'reply': 'Ты зачем это сделал(а)?'
+    },
+    'швырнуть': {
+        'emoji': '💫',
+        'text': '{user} швырнул(а) {target}',
+        'reply': 'Помогите! Я летаю!'
+    },
+    'подзатыльник': {
+        'emoji': '👋',
+        'text': '{user} зарядил(а) подзатыльник {target}',
+        'reply': 'Ну что ты делаешь!'
+    },
+    'пощекотать': {
+        'emoji': '🙌',
+        'text': '{user} пощекотал(а) {target}',
+        'reply': 'Ха-ха-ха-ха! Прекрати!'
+    },
+
+    # ─── РОМАНТИЧЕСКИЕ ДЕЙСТВИЯ ────────────────────────────────
+    'флиртовать': {
+        'emoji': '😏',
+        'text': '{user} флиртует с {target}',
+        'reply': '😳 Ты мне нравишься'
+    },
+    'подмигнуть': {
+        'emoji': '😉',
+        'text': '{user} подмигнул(а) {target}',
+        'reply': '😊 Я тебя заметил(а)'
+    },
+
+    # ─── ДРУЖЕСКИЕ ДЕЙСТВИЯ ────────────────────────────────────
+    'пожать руку': {
+        'emoji': '🤝',
+        'text': '{user} крепко пожал(а) руку {target}',
+        'reply': 'Приятно познакомиться!'
+    },
+    'похлопать': {
+        'emoji': '👋',
+        'text': '{user} дружески похлопал(а) {target} по плечу',
+        'reply': 'Спасибо, дружище!'
+    },
+    'дать пять': {
+        'emoji': '🖐️',
+        'text': '{user} дал(а) пять {target}',
+        'reply': '✋ Даю!'
+    },
+    'поклониться': {
+        'emoji': '🙇',
+        'text': '{user} уважительно поклонился(а) {target}',
+        'reply': 'Спасибо за честь!'
+    },
+    'помахать': {
+        'emoji': '👋',
+        'text': '{user} весело помахал(а) {target}',
+        'reply': '👋 Привет!'
+    },
+    'показать язык': {
+        'emoji': '😛',
+        'text': '{user} показал(а) язык {target}',
+        'reply': 'Ты будешь наказан!'
+    },
+    'подбодрить': {
+        'emoji': '👍',
+        'text': '{user} подбодрил(а) {target} большим пальцем',
+        'reply': 'Спасибо! Теперь я уверен(а)!'
+    },
+    'аплодировать': {
+        'emoji': '👏',
+        'text': '{user} громко поаплодировал(а) {target}',
+        'reply': 'Спасибо! Я в восторге!'
+    },
+    'обнять дружески': {
+        'emoji': '🫂',
+        'text': '{user} крепко обнял(а) {target} по-дружески',
+        'reply': 'Спасибо за дружбу! 💕'
+    },
+    'успокоить': {
+        'emoji': '🤲',
+        'text': '{user} нежно успокоил(а) {target}',
+        'reply': 'Спасибо, это помогает...'
+    },
+    'погладить по голове': {
+        'emoji': '🤗',
+        'text': '{user} ласково погладил(а) {target} по голове',
+        'reply': 'Мур-р-р, как приятно!'
+    },
+    'кивнуть': {
+        'emoji': '👋',
+        'text': '{user} одобрительно кивнул(а) {target}',
+        'reply': 'Я согласен(а)!'
+    },
+    'погладить': {
+        'emoji': '🫳',
+        'text': '{user} нежно погладил(а) {target} по головке',
+        'reply': 'Оооо, как хорошо...'
+    },
+}
+
+def get_all_rp_commands():
+    return list(RP_COMMANDS.keys())
+
+def get_category_commands(category):
+    categories = {
+        'интимные': [
+            'поцеловать', 'обнять', 'засосать', 'отсосать', 'отлизать',
+            'лизнуть', 'прижать', 'связать', 'раздеть', 'выебать',
+            'вылизать', 'трахнуть', 'насадить', 'отыметь', 'залезть',
+            'сесть', 'лап'
+        ],
+        'агрессивные': [
+            'ударить', 'кусь', 'хрусь', 'пнуть', 'шлеп', 'щелбан',
+            'уебать', 'вмазать', 'втащить', 'заехать', 'пощечина',
+            'толкнуть', 'швырнуть', 'подзатыльник', 'пощекотать'
+        ],
+        'романтические': ['флиртовать', 'подмигнуть'],
+        'дружеские': [
+            'пожать руку', 'похлопать', 'дать пять', 'поклониться',
+            'помахать', 'показать язык', 'подбодрить', 'аплодировать',
+            'обнять дружески', 'успокоить', 'погладить по голове',
+            'кивнуть', 'погладить'
+        ],
+    }
+    return categories.get(category, [])
+
+def get_all_categories():
+    return ['интимные', 'агрессивные', 'романтические', 'дружеские']
+
+# ════════════════════════════════════════════════════════════
+# Класс BotState (без изменений)
+# ════════════════════════════════════════════════════════════
 class BotState:
     def __init__(self):
         self.auto_reply_enabled = False
@@ -158,19 +429,17 @@ def write_json(path, data):
     except Exception as e:
         logger.error(f"Ошибка записи {path}: {e}")
 
-# ─── Защита от флуда ────────────────────────────────────────
-command_cooldown = defaultdict(float)
-COOLDOWN_SEC = 1.5
-
 def bump_stat(key, n=1):
     d = load_json(STATS_FILE, {})
     d[key] = d.get(key, 0) + n
     write_json(STATS_FILE, d)
 
-# ─── Глобальное состояние ──────────────────────────────────
+# ─── Состояние ──────────────────────────────────────────────
 state = BotState()
+command_cooldown = defaultdict(float)
+COOLDOWN_SEC = 1.5
 
-# ─── Клиент Telegram (с поддержкой строки сессии) ──────────
+# ─── Клиент Telegram ──────────────────────────────────────
 def create_client():
     if STRING_SESSION:
         from telethon.sessions import StringSession
@@ -192,7 +461,7 @@ def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
 # ════════════════════════════════════════════════════════════
-# 1. ОСНОВНЫЕ КОМАНДЫ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА)
+# 1. ОСНОВНЫЕ КОМАНДЫ
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(pattern=r'/sleep$', from_users='me'))
@@ -1255,7 +1524,7 @@ async def resetdata_cmd(e):
     await e.edit("🧹 **Все данные сброшены.**")
 
 # ════════════════════════════════════════════════════════════
-# 10. HELP (с категорией RP)
+# 10. HELP – с категорией RP
 # ════════════════════════════════════════════════════════════
 
 COMMANDS_LIST = {
@@ -1414,6 +1683,7 @@ async def help_cmd(e):
         bump_stat('cmds')
         return
 
+    # Главное меню
     lines = ["📚 **UserBot Help**\n\nВыбери категорию — скопируй команду и отправь:\n"]
     for cat in HELP_CATS:
         emoji = EMOJI_MAP.get(cat, '•')
@@ -1439,23 +1709,29 @@ async def commands_cmd(e):
     bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
-# 11. RP-КОМАНДЫ (ДЛЯ ВСЕХ В ЛС)
+# 11. RP-КОМАНДЫ (ОБРАБОТЧИК ДЛЯ ВСЕХ В ЛС)
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def rp_handler(event):
+    """Обрабатывает RP-команды от всех пользователей в ЛС"""
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
+
+    # Проверяем, что это ответ на сообщение
     if not event.reply_to_msg_id:
         return
+
     reply_msg = await event.get_reply_message()
     if not reply_msg or not reply_msg.sender_id:
         return
+
     text = event.raw_text.strip().lower()
     if text not in RP_COMMANDS:
         return
 
+    # Получаем имена
     try:
         target_entity = await event.client.get_entity(reply_msg.sender_id)
         target_name = target_entity.first_name or "пользователь"
@@ -1463,34 +1739,42 @@ async def rp_handler(event):
         target_name = "пользователь"
 
     user_name = sender.first_name or "Кто-то"
+
+    # Форматируем действие
     cmd = RP_COMMANDS[text]
     action_text = cmd['text'].format(user=user_name, target=target_name)
     reply_text = cmd['reply']
+
+    # Отправляем ответ
     await event.reply(f"{cmd['emoji']} {action_text}\n\n{reply_text}")
     logger.info(f"RP: {user_name} -> {target_name}: {text}")
     bump_stat('cmds')
 
-# ─── AFK и автоответчик ──────────────────────────────────
+# ─── AFK и автоответчик (второй обработчик, чтобы не мешать RP) ──
 reply_cooldown = defaultdict(float)
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def afk_auto_reply_handler(event):
+    """Обработчик AFK и автоответчика (после RP)"""
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
     uid = event.sender_id
     now = time.time()
 
+    # Пропускаем, если это RP-команда
     text = event.raw_text.strip().lower()
     if text in RP_COMMANDS and event.reply_to_msg_id:
-        return  # уже обработано
+        return
 
+    # AFK
     if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
         dur = fmt_time(now - state.afk_start_time)
         reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
         reply_cooldown[f'afk_{uid}'] = now
         await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
 
+    # Автоответчик
     if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_cooldown[uid] = now
         await asyncio.sleep(1)
@@ -1502,6 +1786,7 @@ async def rphelp_cmd(event):
     sender = await event.get_sender()
     if not sender or sender.bot:
         return
+
     lines = ["📚 **Доступные RP-команды**\n"]
     for category in get_all_categories():
         cmds = get_category_commands(category)
