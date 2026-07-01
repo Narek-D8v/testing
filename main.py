@@ -101,7 +101,6 @@ class BotState:
         except Exception as e:
             logger.error(f"Ошибка сохранения состояния: {e}")
 
-    # ДОБАВЛЕНЫ МЕТОДЫ ДЛЯ АВТООТВЕТЧИКА И GHOST
     def toggle_auto_reply(self, state=None):
         if state is None:
             self.auto_reply_enabled = not self.auto_reply_enabled
@@ -120,7 +119,6 @@ class BotState:
             self.ghost_mode = state
         self.save()
 
-    # Стелс-методы уже были, они сохраняют состояние
     def set_cover(self, state=None):
         if state is None:
             self.cover_enabled = not self.cover_enabled
@@ -249,26 +247,26 @@ def run_web():
     app.run(host='127.0.0.1', port=PORT)
 
 # ════════════════════════════════════════════════════════════
-# 1. ВСЕ ОСНОВНЫЕ КОМАНДЫ
+# 1. ВСЕ ОСНОВНЫЕ КОМАНДЫ (префикс !)
 # ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'/sleep$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!sleep$', from_users='me'))
 async def sleep_cmd(e):
     state.toggle_auto_reply(True)
     await e.edit(f"💤 **Автоответчик**\n\nСтатус: ✅ **Включён**\nТекст: _{state.auto_reply_text}_")
 
-@client.on(events.NewMessage(pattern=r'/wake$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!wake$', from_users='me'))
 async def wake_cmd(e):
     state.toggle_auto_reply(False)
     await e.edit('☀️ **Автоответчик**\n\nСтатус: ❌ **Выключен**')
 
-@client.on(events.NewMessage(pattern=r'/setreply (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!setreply (.+)', from_users='me'))
 async def setreply_cmd(e):
     text = e.pattern_match.group(1).strip()
     state.set_auto_reply_text(text)
     await e.edit(f"✍️ **Текст автоответчика обновлён**\n\n_{text}_")
 
-@client.on(events.NewMessage(pattern=r'/status$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!status$', from_users='me'))
 async def status_cmd(e):
     me = await client.get_me()
     dialogs = await client.get_dialogs()
@@ -291,7 +289,7 @@ async def status_cmd(e):
         lines.append(f"💬 **Текст:** _{reply_text}_")
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/time$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!time$', from_users='me'))
 async def time_cmd(e):
     now = datetime.datetime.now()
     utc = datetime.datetime.utcnow()
@@ -313,7 +311,7 @@ async def time_cmd(e):
         f"📋 **Неделя:** `#{week_num}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/ping$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!ping$', from_users='me'))
 async def ping_cmd(e):
     t0 = time.monotonic()
     msg = await e.edit("🏓 Pinging...")
@@ -327,7 +325,7 @@ async def ping_cmd(e):
         f"{bar} **{label}**"
     )
 
-@client.on(events.NewMessage(pattern=r'/id$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!id$', from_users='me'))
 async def id_cmd(e):
     chat = await e.get_chat()
     chat_name = getattr(chat, 'title', None) or f"{getattr(chat, 'first_name', '')} {getattr(chat, 'last_name', '')}".strip()
@@ -354,7 +352,7 @@ async def id_cmd(e):
         ]
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/info$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!info$', from_users='me'))
 async def info_cmd(e):
     me = await client.get_me()
     dialogs = await client.get_dialogs()
@@ -375,7 +373,7 @@ async def info_cmd(e):
         f"⚡ **Статус:** Активен ✅"
     )
 
-@client.on(events.NewMessage(pattern=r'/restart$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!restart$', from_users='me'))
 async def restart_cmd(e):
     await e.edit('🔄 **Перезагрузка...**\n\nСохраняю состояние...')
     state.save()
@@ -384,7 +382,7 @@ async def restart_cmd(e):
     await client.disconnect()
     sys.exit(0)
 
-@client.on(events.NewMessage(pattern=r'/ghost$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!ghost$', from_users='me'))
 async def ghost_cmd(e):
     state.toggle_ghost()
     if state.ghost_mode:
@@ -395,7 +393,7 @@ async def ghost_cmd(e):
         await e.edit("👁 **Ghost-режим ВЫКЛЮЧЕН**")
 
 # ─── ПРОФИЛЬ ──────────────────────────────────────────────
-@client.on(events.NewMessage(pattern=r'/me$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!me$', from_users='me'))
 async def me_cmd(e):
     me = await client.get_me()
     photos = await client.get_profile_photos(me.id, limit=1)
@@ -413,7 +411,7 @@ async def me_cmd(e):
         f"🌐 **Язык:** `{lang}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/avatar$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!avatar$', from_users='me'))
 async def avatar_cmd(e):
     if e.reply_to_msg_id:
         r = await e.get_reply_message()
@@ -427,25 +425,25 @@ async def avatar_cmd(e):
     else:
         await e.edit("❌ Аватарка не найдена")
 
-@client.on(events.NewMessage(pattern=r'/name (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!name (.+)', from_users='me'))
 async def name_cmd(e):
     n = e.pattern_match.group(1).strip()
     await client.edit_profile(first_name=n)
     await e.edit(f"✅ Имя → **{n}**")
 
-@client.on(events.NewMessage(pattern=r'/lastname(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!lastname(?:\s+(.+))?$', from_users='me'))
 async def lastname_cmd(e):
     n = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(last_name=n)
     await e.edit(f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
 
-@client.on(events.NewMessage(pattern=r'/bio(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!bio(?:\s+(.+))?$', from_users='me'))
 async def bio_cmd(e):
     t = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(about=t)
     await e.edit(f"✅ Био → _{t}_" if t else "✅ Био очищено")
 
-@client.on(events.NewMessage(pattern=r'/whois (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!whois (.+)', from_users='me'))
 async def whois_cmd(e):
     target = e.pattern_match.group(1).strip().lstrip('@')
     try:
@@ -473,7 +471,7 @@ async def whois_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ **Пользователь не найден**\n\n`{ex}`")
 
-@client.on(events.NewMessage(pattern=r'/username_check (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!username_check (.+)', from_users='me'))
 async def username_check_cmd(e):
     uname = e.pattern_match.group(1).strip().lstrip('@')
     try:
@@ -498,14 +496,14 @@ async def username_check_cmd(e):
 # ─── ИГРЫ ──────────────────────────────────────────────────
 DICE_EMOJI = {'dice': '🎲', 'dart': '🎯', 'basket': '🏀', 'football': '⚽', 'bowling': '🎳', 'casino': '🎰'}
 
-@client.on(events.NewMessage(pattern=r'/(dice|dart|basket|football|bowling|casino)$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!(dice|dart|basket|football|bowling|casino)$', from_users='me'))
 async def dice_cmd(e):
     game = e.pattern_match.group(1)
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice(DICE_EMOJI[game]))
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/coin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!coin$', from_users='me'))
 async def coin_cmd(e):
     sides = [("Орёл", "🦅"), ("Решка", "💰")]
     flips = random.randint(3, 9)
@@ -518,7 +516,7 @@ async def coin_cmd(e):
     await msg.edit(f"🪙 **Монетка**\n\n───\n{emoji} **{name}**\n───\n\n_Выпал(а) после {flips} вращений_")
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', from_users='me'))
 async def rand_cmd(e):
     g = e.pattern_match
     a, b = g.group(1), g.group(2)
@@ -563,7 +561,7 @@ EIGHTBALL_ANSWERS = {
     ],
 }
 
-@client.on(events.NewMessage(pattern=r'/8ball(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!8ball(?:\s+(.+))?$', from_users='me'))
 async def eightball_cmd(e):
     question = (e.pattern_match.group(1) or '').strip()
     spin = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
@@ -592,14 +590,14 @@ async def eightball_cmd(e):
     await msg.edit("\n".join(lines))
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/rps(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!rps(?:\s+(.+))?$', from_users='me'))
 async def rps_cmd(e):
     MAP = {'к':'🪨 Камень','камень':'🪨 Камень','н':'✂️ Ножницы','ножницы':'✂️ Ножницы','б':'📄 Бумага','бумага':'📄 Бумага'}
     BOT = ['🪨 Камень','✂️ Ножницы','📄 Бумага']
     WIN = {'🪨 Камень':'✂️ Ножницы','✂️ Ножницы':'📄 Бумага','📄 Бумага':'🪨 Камень'}
     arg = (e.pattern_match.group(1) or '').lower().strip()
     if not arg or arg not in MAP:
-        await e.edit("✊✌️🖐 **Камень–Ножницы–Бумага**\n\nИспользуй: `/rps камень` / `ножницы` / `бумага`\nИли сокращённо: `к` / `н` / `б`")
+        await e.edit("✊✌️🖐 **Камень–Ножницы–Бумага**\n\nИспользуй: `!rps камень` / `ножницы` / `бумага`\nИли сокращённо: `к` / `н` / `б`")
         return
     uc, bc = MAP[arg], random.choice(BOT)
     if uc == bc:
@@ -620,7 +618,7 @@ async def rps_cmd(e):
     )
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/slot$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!slot$', from_users='me'))
 async def slot_cmd(e):
     SYM = ['🍒','🍋','🍊','🍇','🍉','⭐','💎','7️⃣','🔔','🍀']
     msg = await e.edit("🎰 [ ▓ | ▓ | ▓ ]")
@@ -647,7 +645,7 @@ async def slot_cmd(e):
     )
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/lucky$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!lucky$', from_users='me'))
 async def lucky_cmd(e):
     pct = random.randint(0, 100)
     bar = progress_bar(pct, 100, 12)
@@ -668,12 +666,12 @@ async def lucky_cmd(e):
     )
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/choose (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!choose (.+)', from_users='me'))
 async def choose_cmd(e):
     raw = e.pattern_match.group(1)
     opts = [o.strip() for o in re.split(r'[,|/]', raw) if o.strip()]
     if len(opts) < 2:
-        await e.edit("ℹ️ **Choose**\n\nПеречисли варианты через запятую:\n`/choose пицца, суши, бургер`")
+        await e.edit("ℹ️ **Choose**\n\nПеречисли варианты через запятую:\n`!choose пицца, суши, бургер`")
         return
     winner = random.choice(opts)
     listed = "\n".join(f"{'  •'} {o}" for o in opts)
@@ -684,7 +682,7 @@ async def choose_cmd(e):
         f"✅ **Выбрано:** `{winner}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/quiz$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!quiz$', from_users='me'))
 async def quiz_cmd(e):
     QUESTIONS = [
         ("Столица Австралии?", ["Сидней","Мельбурн","Канберра","Перт"], 2),
@@ -793,7 +791,7 @@ def vigenere(text, key, dec=False):
             out.append(c)
     return ''.join(out)
 
-@client.on(events.NewMessage(pattern=r'/calc (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!calc (.+)', from_users='me'))
 async def calc_cmd(e):
     expr = e.pattern_match.group(1).strip()
     r = await safe_eval(expr)
@@ -813,7 +811,7 @@ async def send_reminder(chat_id, msg, delay):
     except Exception as e:
         logger.error(f"Ошибка напоминания: {e}")
 
-@client.on(events.NewMessage(pattern=r'/remind (\d+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!remind (\d+) (.+)', from_users='me'))
 async def remind_cmd(e):
     delay = int(e.pattern_match.group(1))
     text = e.pattern_match.group(2).strip()
@@ -829,7 +827,7 @@ async def remind_cmd(e):
     )
     asyncio.create_task(send_reminder(e.chat_id, text, delay))
 
-@client.on(events.NewMessage(pattern=r'/search (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!search (.+)', from_users='me'))
 async def search_cmd(e):
     q = e.pattern_match.group(1).strip()
     enc = q.replace(' ','+')
@@ -842,7 +840,7 @@ async def search_cmd(e):
         f"🔗 [Wikipedia](https://ru.wikipedia.org/wiki/Special:Search?search={enc})"
     )
 
-@client.on(events.NewMessage(pattern=r'/shorten (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!shorten (.+)', from_users='me'))
 async def shorten_cmd(e):
     url = e.pattern_match.group(1).strip()
     await e.edit("⏳ **Сокращаю ссылку...**")
@@ -862,7 +860,7 @@ async def shorten_cmd(e):
     except Exception:
         await e.edit("❌ **Ошибка**\n\nНе удалось сократить ссылку. Проверь URL.")
 
-@client.on(events.NewMessage(pattern=r'/weather (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!weather (.+)', from_users='me'))
 async def weather_cmd(e):
     city = e.pattern_match.group(1).strip()
     enc = city.replace(' ','+')
@@ -874,7 +872,7 @@ async def weather_cmd(e):
         f"🔗 [Weather.com](https://weather.com/weather/today/l/{enc})"
     )
 
-@client.on(events.NewMessage(pattern=r'/translate (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!translate (.+)', from_users='me'))
 async def translate_cmd(e):
     text = e.pattern_match.group(1).strip()
     enc = text.replace(' ','%20')
@@ -886,7 +884,7 @@ async def translate_cmd(e):
         f"🔗 [Auto → RU](https://translate.google.com/?sl=auto&tl=ru&text={enc})"
     )
 
-@client.on(events.NewMessage(pattern=r'/base64 (encode|decode) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)', from_users='me'))
 async def base64_cmd(e):
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
     try:
@@ -909,7 +907,7 @@ async def base64_cmd(e):
     except Exception:
         await e.edit("❌ **Ошибка Base64**\n\nПроверь входные данные.")
 
-@client.on(events.NewMessage(pattern=r'/hash (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!hash (.+)', from_users='me'))
 async def hash_cmd(e):
     text = e.pattern_match.group(1).strip().encode()
     await e.edit(
@@ -922,7 +920,7 @@ async def hash_cmd(e):
         f"**SHA512:** `{hashlib.sha512(text).hexdigest()[:64]}…`"
     )
 
-@client.on(events.NewMessage(pattern=r'/morse (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!morse (.+)', from_users='me'))
 async def morse_cmd(e):
     text = e.pattern_match.group(1).strip()
     await e.edit(
@@ -932,7 +930,7 @@ async def morse_cmd(e):
         f"`{morse_enc(text)}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/caesar (encode|decode) (\d+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', from_users='me'))
 async def caesar_cmd(e):
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
     res = caesar(text, shift, dec=(mode=='decode'))
@@ -946,7 +944,7 @@ async def caesar_cmd(e):
         f"**{label}:**\n`{res}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/vigenere (encode|decode) (\S+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', from_users='me'))
 async def vigenere_cmd(e):
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
     res = vigenere(text, key, dec=(mode=='decode'))
@@ -960,7 +958,7 @@ async def vigenere_cmd(e):
         f"**{label}:**\n`{res}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/password(?:\s+(\d+))?(?:\s+(simple))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!password(?:\s+(\d+))?(?:\s+(simple))?$', from_users='me'))
 async def password_cmd(e):
     length = max(4, min(int(e.pattern_match.group(1) or 16), 128))
     sym = not e.pattern_match.group(2)
@@ -981,7 +979,7 @@ async def password_cmd(e):
     await asyncio.sleep(30)
     await msg.delete()
 
-@client.on(events.NewMessage(pattern=r'/qr (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!qr (.+)', from_users='me'))
 async def qr_cmd(e):
     text = e.pattern_match.group(1).strip().replace(' ','+')
     await e.edit(
@@ -990,7 +988,7 @@ async def qr_cmd(e):
         f"🔗 [Открыть QR-код](https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={text})"
     )
 
-@client.on(events.NewMessage(pattern=r'/uuid$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!uuid$', from_users='me'))
 async def uuid_cmd(e):
     ids = [str(uuid.uuid4()) for _ in range(5)]
     out = "\n".join(f"`{u}`" for u in ids)
@@ -1000,7 +998,7 @@ async def uuid_cmd(e):
         f"_5 случайных UUID_"
     )
 
-@client.on(events.NewMessage(pattern=r'/color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', from_users='me'))
 async def color_cmd(e):
     raw = e.pattern_match.group(1).strip()
     if raw.startswith('#'):
@@ -1032,7 +1030,7 @@ async def color_cmd(e):
         f"🔗 [Превью]({preview_url})"
     )
 
-@client.on(events.NewMessage(pattern=r'/ascii (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!ascii (.+)', from_users='me'))
 async def ascii_cmd(e):
     text = e.pattern_match.group(1).strip()
     codes = ' '.join(str(ord(c)) for c in text)
@@ -1102,36 +1100,36 @@ async def _type_normal(e, text):
 
 TYPE_MODES = {'fast': _type_fast, 'slow': _type_slow, 'matrix': _type_matrix, 'glitch': _type_glitch}
 
-@client.on(events.NewMessage(pattern=r'/type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', from_users='me'))
 async def type_cmd(e):
     mode = e.pattern_match.group(1) or 'normal'
     text = e.pattern_match.group(2).strip()
     func = TYPE_MODES.get(mode, _type_normal)
     await func(e, text)
 
-@client.on(events.NewMessage(pattern=r'/echo (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!echo (.+)', from_users='me'))
 async def echo_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
 
-@client.on(events.NewMessage(pattern=r'/bold (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!bold (.+)', from_users='me'))
 async def bold_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"**{e.pattern_match.group(1).strip()}**")
 
-@client.on(events.NewMessage(pattern=r'/italic (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!italic (.+)', from_users='me'))
 async def italic_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"__{e.pattern_match.group(1).strip()}__")
 
-@client.on(events.NewMessage(pattern=r'/mono (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!mono (.+)', from_users='me'))
 async def mono_cmd(e):
     await e.delete()
     await client.send_message(e.chat_id, f"`{e.pattern_match.group(1).strip()}`")
 
 MAX_CLEAN = 100
 
-@client.on(events.NewMessage(pattern=r'/clean(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!clean(?:\s+(\d+))?$', from_users='me'))
 async def clean_cmd(e):
     limit = int(e.pattern_match.group(1) or 10)
     my_id = (await client.get_me()).id
@@ -1146,7 +1144,7 @@ async def clean_cmd(e):
     await asyncio.sleep(3)
     await info.delete()
 
-@client.on(events.NewMessage(pattern=r'/purge(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!purge(?:\s+(\d+))?$', from_users='me'))
 async def purge_cmd(e):
     limit = min(int(e.pattern_match.group(1) or 10), MAX_CLEAN)
     await e.delete()
@@ -1159,7 +1157,7 @@ async def purge_cmd(e):
     await asyncio.sleep(3)
     await info.delete()
 
-@client.on(events.NewMessage(pattern=r'/spam (\d+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)', from_users='me'))
 async def spam_cmd(e):
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
     await e.delete()
@@ -1167,10 +1165,10 @@ async def spam_cmd(e):
         await client.send_message(e.chat_id, text)
         await asyncio.sleep(0.35)
 
-@client.on(events.NewMessage(pattern=r'/forward (-?\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!forward (-?\d+)', from_users='me'))
 async def forward_cmd(e):
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ **Forward**\n\nОтветьте на сообщение:\n`/forward [chat_id]`")
+        await e.edit("ℹ️ **Forward**\n\nОтветьте на сообщение:\n`!forward [chat_id]`")
         return
     try:
         msg = await e.get_reply_message()
@@ -1179,7 +1177,7 @@ async def forward_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ **Ошибка**\n\n`{ex}`")
 
-@client.on(events.NewMessage(pattern=r'/pin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!pin$', from_users='me'))
 async def pin_cmd(e):
     if not e.reply_to_msg_id:
         await e.edit("ℹ️ **Pin**\n\nОтветьте на сообщение, которое нужно закрепить")
@@ -1187,7 +1185,7 @@ async def pin_cmd(e):
     await (await e.get_reply_message()).pin(notify=False)
     await e.delete()
 
-@client.on(events.NewMessage(pattern=r'/unpin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!unpin$', from_users='me'))
 async def unpin_cmd(e):
     if e.reply_to_msg_id:
         await (await e.get_reply_message()).unpin()
@@ -1195,10 +1193,10 @@ async def unpin_cmd(e):
         await client.unpin_message(e.chat_id)
     await e.delete()
 
-@client.on(events.NewMessage(pattern=r'/copyall (\d+) (-?\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!copyall (\d+) (-?\d+)', from_users='me'))
 async def copyall_cmd(e):
     count = int(e.pattern_match.group(1))
-    target = int(e.pattern_match.group(2))  # ИСПРАВЛЕНО
+    target = int(e.pattern_match.group(2))
     msg = await e.edit(f"⏳ **Копирование...**\n\n0/{count}")
     copied = 0
     async for m in client.iter_messages(e.chat_id, limit=count, reverse=True):
@@ -1212,10 +1210,10 @@ async def copyall_cmd(e):
             pass
     await msg.edit(f"✅ **Копирование завершено**\n\n{copied}/{count} → `{target}`")
 
-@client.on(events.NewMessage(pattern=r'/react (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!react (.+)', from_users='me'))
 async def react_cmd(e):
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ **Reaction**\n\nОтветьте на сообщение:\n`/react 👍`")
+        await e.edit("ℹ️ **Reaction**\n\nОтветьте на сообщение:\n`!react 👍`")
         return
     emoji = e.pattern_match.group(1).strip()
     try:
@@ -1229,7 +1227,7 @@ async def react_cmd(e):
         await e.edit(f"❌ **Ошибка реакции**\n\n`{ex}`")
 
 # ─── ЗАМЕТКИ И TODO ───────────────────────────────────────
-@client.on(events.NewMessage(pattern=r'/save (\S+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!save (\S+) (.+)', from_users='me'))
 async def save_cmd(e):
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
     d = await load_json(SAVED_FILE, {})
@@ -1237,7 +1235,7 @@ async def save_cmd(e):
     await write_json(SAVED_FILE, d)
     await e.edit(f"💾 **Сохранено**\n\n`{k}`\n───\n_{v}_")
 
-@client.on(events.NewMessage(pattern=r'/get (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!get (\S+)', from_users='me'))
 async def get_cmd(e):
     k = e.pattern_match.group(1)
     d = await load_json(SAVED_FILE, {})
@@ -1247,7 +1245,7 @@ async def get_cmd(e):
     else:
         await e.edit(f"❌ **Не найдено**\n\nКлюч `{k}` не существует")
 
-@client.on(events.NewMessage(pattern=r'/del (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!del (\S+)', from_users='me'))
 async def del_cmd(e):
     k = e.pattern_match.group(1)
     d = await load_json(SAVED_FILE, {})
@@ -1259,7 +1257,7 @@ async def del_cmd(e):
     else:
         await e.edit(f"❌ **Не найдено**\n\nКлюч `{k}` не существует")
 
-@client.on(events.NewMessage(pattern=r'/list$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!list$', from_users='me'))
 async def list_cmd(e):
     d = await load_json(SAVED_FILE, {})
     if not d:
@@ -1268,7 +1266,7 @@ async def list_cmd(e):
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v)>40 else ''}_" for k, v in d.items())
     await e.edit(f"💾 **Хранилище** (`{len(d)}`)\n\n{items}")
 
-@client.on(events.NewMessage(pattern=r'/note (\S+)(?: (.+))?', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', from_users='me'))
 async def note_cmd(e):
     k = e.pattern_match.group(1)
     t = e.pattern_match.group(2) or ""
@@ -1276,14 +1274,14 @@ async def note_cmd(e):
         r = await e.get_reply_message()
         t = r.text or t
     if not t:
-        await e.edit("ℹ️ **Заметки**\n\n`/note <название> <текст>`\nИли ответь на сообщение: `/note <название>`")
+        await e.edit("ℹ️ **Заметки**\n\n`!note <название> <текст>`\nИли ответь на сообщение: `!note <название>`")
         return
     d = await load_json(NOTES_FILE, {})
     d[k] = t
     await write_json(NOTES_FILE, d)
     await e.edit(f"📝 **Заметка сохранена**\n\n`{k}`")
 
-@client.on(events.NewMessage(pattern=r'/getnote (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!getnote (\S+)', from_users='me'))
 async def getnote_cmd(e):
     k = e.pattern_match.group(1)
     d = await load_json(NOTES_FILE, {})
@@ -1292,7 +1290,7 @@ async def getnote_cmd(e):
     else:
         await e.edit(f"❌ **Заметка не найдена**\n\n`{k}`")
 
-@client.on(events.NewMessage(pattern=r'/delnote (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!delnote (\S+)', from_users='me'))
 async def delnote_cmd(e):
     k = e.pattern_match.group(1)
     d = await load_json(NOTES_FILE, {})
@@ -1303,7 +1301,7 @@ async def delnote_cmd(e):
     else:
         await e.edit(f"❌ **Не найдена**\n\nЗаметка `{k}` не существует")
 
-@client.on(events.NewMessage(pattern=r'/notes$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!notes$', from_users='me'))
 async def notes_cmd(e):
     d = await load_json(NOTES_FILE, {})
     if not d:
@@ -1312,7 +1310,7 @@ async def notes_cmd(e):
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v)>40 else ''}_" for k, v in d.items())
     await e.edit(f"📝 **Заметки** (`{len(d)}`)\n\n{items}")
 
-@client.on(events.NewMessage(pattern=r'/todo (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!todo (.+)', from_users='me'))
 async def todo_add_cmd(e):
     task = e.pattern_match.group(1).strip()
     todos = await load_json(TODOS_FILE, [])
@@ -1326,11 +1324,11 @@ async def todo_add_cmd(e):
         f"📋 Всего: `{len(todos)}` | Осталось: `{pending}`"
     )
 
-@client.on(events.NewMessage(pattern=r'/todos$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!todos$', from_users='me'))
 async def todos_cmd(e):
     todos = await load_json(TODOS_FILE, [])
     if not todos:
-        await e.edit("📭 **TODO**\n\nСписок задач пуст\n\n`/todo <задача>` — добавить")
+        await e.edit("📭 **TODO**\n\nСписок задач пуст\n\n`!todo <задача>` — добавить")
         return
     lines = []
     for i, t in enumerate(todos, 1):
@@ -1345,7 +1343,7 @@ async def todos_cmd(e):
         f"✅ `{done}` выполнено | ⬜ `{pending}` осталось"
     )
 
-@client.on(events.NewMessage(pattern=r'/done (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!done (\d+)', from_users='me'))
 async def done_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
     todos = await load_json(TODOS_FILE, [])
@@ -1356,7 +1354,7 @@ async def done_cmd(e):
     else:
         await e.edit(f"❌ **Ошибка**\n\nЗадача #{idx + 1} не найдена")
 
-@client.on(events.NewMessage(pattern=r'/undone (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!undone (\d+)', from_users='me'))
 async def undone_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
     todos = await load_json(TODOS_FILE, [])
@@ -1367,7 +1365,7 @@ async def undone_cmd(e):
     else:
         await e.edit(f"❌ **Ошибка**\n\nЗадача #{idx + 1} не найдена")
 
-@client.on(events.NewMessage(pattern=r'/deltodo (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!deltodo (\d+)', from_users='me'))
 async def deltodo_cmd(e):
     idx = int(e.pattern_match.group(1)) - 1
     todos = await load_json(TODOS_FILE, [])
@@ -1379,7 +1377,7 @@ async def deltodo_cmd(e):
         await e.edit(f"❌ **Ошибка**\n\nЗадача #{idx + 1} не найдена")
 
 # ─── AFK ──────────────────────────────────────────────────
-@client.on(events.NewMessage(pattern=r'/afk(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!afk(?:\s+(.+))?$', from_users='me'))
 async def afk_cmd(e):
     reason = (e.pattern_match.group(1) or '').strip()
     state.set_afk(reason)
@@ -1388,7 +1386,7 @@ async def afk_cmd(e):
         message += f"\n\n📝 Причина: _{reason}_"
     await e.edit(message)
 
-@client.on(events.NewMessage(pattern=r'/unafk$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!unafk$', from_users='me'))
 async def unafk_cmd(e):
     dur = state.clear_afk()
     if dur is not None:
@@ -1400,7 +1398,7 @@ async def unafk_cmd(e):
         await e.edit("ℹ️ **AFK**\n\nРежим AFK не был включён")
 
 # ─── ИНФОРМАЦИЯ О ЧАТЕ ──────────────────────────────────
-@client.on(events.NewMessage(pattern=r'/chatinfo$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!chatinfo$', from_users='me'))
 async def chatinfo_cmd(e):
     chat = await e.get_chat()
     name = getattr(chat, 'title', None) or f"{getattr(chat, 'first_name', '')} {getattr(chat, 'last_name', '')}".strip()
@@ -1421,7 +1419,7 @@ async def chatinfo_cmd(e):
     lines.append(f"🔒 **Создатель:** {'✅' if getattr(chat, 'creator', False) else '❌'}")
     await e.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/members$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!members$', from_users='me'))
 async def members_cmd(e):
     try:
         p = await client.get_participants(e.chat_id)
@@ -1437,7 +1435,7 @@ async def members_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ **Ошибка**\n\n`{ex}`")
 
-@client.on(events.NewMessage(pattern=r'/admins$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!admins$', from_users='me'))
 async def admins_cmd(e):
     try:
         admins = await client.get_participants(e.chat_id, filter=ChannelParticipantsAdmins())
@@ -1452,7 +1450,7 @@ async def admins_cmd(e):
     except Exception as ex:
         await e.edit(f"❌ **Ошибка**\n\n`{ex}`")
 
-@client.on(events.NewMessage(pattern=r'/top(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!top(?:\s+(\d+))?$', from_users='me'))
 async def top_cmd(e):
     limit = int(e.pattern_match.group(1) or 200)
     msg = await e.edit(f"⏳ **Анализ чата...**\n\nПроверяю последние `{limit}` сообщений")
@@ -1477,7 +1475,7 @@ async def top_cmd(e):
         lines.append(f"{medals[i]} {names.get(uid, uid)} — `{c}` ({pct:.0f}%)")
     await msg.edit("\n".join(lines))
 
-@client.on(events.NewMessage(pattern=r'/bots$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!bots$', from_users='me'))
 async def bots_cmd(e):
     try:
         bots = await client.get_participants(e.chat_id, filter=ChannelParticipantsBots())
@@ -1496,7 +1494,7 @@ async def bots_cmd(e):
         await e.edit(f"❌ **Ошибка**\n\n`{ex}`")
 
 # ─── СБРОС ДАННЫХ ────────────────────────────────────────
-@client.on(events.NewMessage(pattern=r'/resetdata$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!resetdata$', from_users='me'))
 async def resetdata_cmd(e):
     files = [DATA_FILE, SAVED_FILE, NOTES_FILE, TODOS_FILE, STATS_FILE]
     await e.edit("🧹 **Сброс данных...**\n\nУдаляю файлы...")
@@ -1515,9 +1513,9 @@ async def resetdata_cmd(e):
     await e.edit(f"🧹 **Все данные сброшены.**\n\nУдалено файлов: `{deleted}`\nСостояние сброшено к заводским настройкам")
 
 # ════════════════════════════════════════════════════════════
-# 2. RP-КОМАНДЫ (из модуля rp_commands)
+# 2. RP-КОМАНДЫ (из модуля rp_commands) – без префикса
 # ════════════════════════════════════════════════════════════
-# (всё уже реализовано в обработчике private_handler)
+# обработка в private_handler
 
 # ════════════════════════════════════════════════════════════
 # 3. ГЛАВНЫЙ ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ (RP, AFK, автоответчик)
@@ -1533,7 +1531,7 @@ async def private_handler(event):
     if event.reply_to_msg_id:
         logger.info(f"↩️ Ответ на сообщение ID:{event.reply_to_msg_id}")
 
-    # ─── RP-КОМАНДЫ ────────────────────────────────────────
+    # ─── RP-КОМАНДЫ (без префикса) ────────────────────────
     if event.reply_to_msg_id:
         try:
             reply_msg = await event.get_reply_message()
@@ -1571,10 +1569,10 @@ async def private_handler(event):
         await event.reply(state.auto_reply_text)
 
 # ════════════════════════════════════════════════════════════
-# 4. КОМАНДА /rphelp
+# 4. КОМАНДА /rphelp (теперь !rphelp)
 # ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'^/rphelp$', func=lambda e: e.is_private))
+@client.on(events.NewMessage(pattern=r'^!rphelp$', func=lambda e: e.is_private))
 async def rphelp_cmd(event):
     sender = await event.get_sender()
     if not sender:
@@ -1598,40 +1596,40 @@ async def rphelp_cmd(event):
     await bump_stat('cmds')
 
 # ════════════════════════════════════════════════════════════
-# 5. СТЕЛС-КОМАНДЫ (ДОБАВЛЕНЫ)
+# 5. СТЕЛС-КОМАНДЫ (префикс !)
 # ════════════════════════════════════════════════════════════
 
-@client.on(events.NewMessage(pattern=r'^/cover$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!cover$', from_users='me'))
 async def cover_cmd(e):
     state.set_cover()
     await e.edit(f"🥷 **Cover режим** {'✅ ВКЛЮЧЁН' if state.cover_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/silent$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!silent$', from_users='me'))
 async def silent_cmd(e):
     state.set_silent()
     await e.edit(f"🔇 **Silent режим** {'✅ ВКЛЮЧЁН' if state.silent_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/shadow$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!shadow$', from_users='me'))
 async def shadow_cmd(e):
     state.set_shadow()
     await e.edit(f"👤 **Shadow режим** {'✅ ВКЛЮЧЁН' if state.shadow_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/lock$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!lock$', from_users='me'))
 async def lock_cmd(e):
     state.set_lock()
     await e.edit(f"🔒 **Lock режим** {'✅ ВКЛЮЧЁН' if state.lock_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/mute$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!mute$', from_users='me'))
 async def mute_cmd(e):
     state.set_mute()
     await e.edit(f"🔇 **Mute режим** {'✅ ВКЛЮЧЁН' if state.mute_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/hide$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!hide$', from_users='me'))
 async def hide_cmd(e):
     state.set_hide()
     await e.edit(f"🕵️ **Hide режим** {'✅ ВКЛЮЧЁН' if state.hide_enabled else '❌ ВЫКЛЮЧЕН'}")
 
-@client.on(events.NewMessage(pattern=r'^/state$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^!state$', from_users='me'))
 async def state_cmd(e):
     status = (
         f"🥷 **Стелс-режимы**\n\n"
@@ -1645,40 +1643,40 @@ async def state_cmd(e):
     await e.edit(status)
 
 # ════════════════════════════════════════════════════════════
-# 6. HELP И COMMANDS (обновлены категории)
+# 6. HELP И COMMANDS (обновлены префиксы в тексте)
 # ════════════════════════════════════════════════════════════
 
 COMMANDS_LIST = {
     'основные': [
-        '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
-        '/id', '/info', '/restart', '/ghost', '/resetdata'
+        '!sleep', '!wake', '!setreply', '!status', '!time', '!ping',
+        '!id', '!info', '!restart', '!ghost', '!resetdata'
     ],
     'профиль': [
-        '/me', '/avatar', '/name', '/lastname', '/bio', '/whois', '/username_check'
+        '!me', '!avatar', '!name', '!lastname', '!bio', '!whois', '!username_check'
     ],
     'игры': [
-        '/dice', '/dart', '/basket', '/football', '/bowling', '/casino',
-        '/coin', '/rand', '/8ball', '/rps', '/slot', '/lucky', '/choose', '/quiz'
+        '!dice', '!dart', '!basket', '!football', '!bowling', '!casino',
+        '!coin', '!rand', '!8ball', '!rps', '!slot', '!lucky', '!choose', '!quiz'
     ],
     'утилиты': [
-        '/calc', '/remind', '/search', '/shorten', '/weather', '/translate',
-        '/base64', '/hash', '/morse', '/caesar', '/vigenere', '/password',
-        '/qr', '/uuid', '/color', '/ascii'
+        '!calc', '!remind', '!search', '!shorten', '!weather', '!translate',
+        '!base64', '!hash', '!morse', '!caesar', '!vigenere', '!password',
+        '!qr', '!uuid', '!color', '!ascii'
     ],
     'сообщения': [
-        '/type', '/echo', '/bold', '/italic', '/mono',
-        '/clean', '/purge', '/spam', '/forward', '/pin', '/unpin',
-        '/copyall', '/react'
+        '!type', '!echo', '!bold', '!italic', '!mono',
+        '!clean', '!purge', '!spam', '!forward', '!pin', '!unpin',
+        '!copyall', '!react'
     ],
     'заметки': [
-        '/save', '/get', '/del', '/list',
-        '/note', '/getnote', '/delnote', '/notes',
-        '/todo', '/todos', '/done', '/undone', '/deltodo'
+        '!save', '!get', '!del', '!list',
+        '!note', '!getnote', '!delnote', '!notes',
+        '!todo', '!todos', '!done', '!undone', '!deltodo'
     ],
-    'afk': ['/afk', '/unafk'],
-    'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
-    'стелс': ['/cover', '/silent', '/shadow', '/state', '/lock', '/mute', '/hide'],
-    'rp': []   # RP-команды динамические, добавляем для справки
+    'afk': ['!afk', '!unafk'],
+    'инфо': ['!chatinfo', '!members', '!admins', '!top', '!bots'],
+    'стелс': ['!cover', '!silent', '!shadow', '!state', '!lock', '!mute', '!hide'],
+    'rp': []   # RP-команды динамические, без префикса
 }
 
 EMOJI_MAP = {
@@ -1703,106 +1701,106 @@ DESC_MAP = {
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ**\n\n"
-        "▸ `  /sleep  ` — включить автоответчик\n"
-        "▸ `  /wake   ` — выключить\n"
-        "▸ `  /setreply <текст>` — задать текст ответа\n"
-        "▸ `  /status ` — состояние: AFK, авт.ответ, аптайм\n"
-        "▸ `  /time   ` — текущие дата и время\n"
-        "▸ `  /ping   ` — задержка до серверов TG\n"
-        "▸ `  /id     ` — ID чата, сообщения, пользователя\n"
-        "▸ `  /info   ` — информация о боте и аккаунте\n"
-        "▸ `  /restart` — перезагрузка бота\n"
-        "▸ `  /ghost  ` — команды самоуничтожаются\n"
-        "▸ `  /resetdata` — сбросить все данные ⚠️"
+        "▸ `  !sleep  ` — включить автоответчик\n"
+        "▸ `  !wake   ` — выключить\n"
+        "▸ `  !setreply <текст>` — задать текст ответа\n"
+        "▸ `  !status ` — состояние: AFK, авт.ответ, аптайм\n"
+        "▸ `  !time   ` — текущие дата и время\n"
+        "▸ `  !ping   ` — задержка до серверов TG\n"
+        "▸ `  !id     ` — ID чата, сообщения, пользователя\n"
+        "▸ `  !info   ` — информация о боте и аккаунте\n"
+        "▸ `  !restart` — перезагрузка бота\n"
+        "▸ `  !ghost  ` — команды самоуничтожаются\n"
+        "▸ `  !resetdata` — сбросить все данные ⚠️"
     ),
     'профиль': (
         "👤 **ПРОФИЛЬ**\n\n"
-        "▸ `  /me           ` — мой профиль\n"
-        "▸ `  /avatar       ` — показать аватарку\n"
-        "▸ `  /name <имя>   ` — сменить имя\n"
-        "▸ `  /lastname <фам>` — сменить фамилию\n"
-        "▸ `  /bio <текст>  ` — обновить «о себе»\n"
-        "▸ `  /whois @ник   ` — информация о пользователе\n"
-        "▸ `  /username_check @ник` — проверить занят ли username"
+        "▸ `  !me           ` — мой профиль\n"
+        "▸ `  !avatar       ` — показать аватарку\n"
+        "▸ `  !name <имя>   ` — сменить имя\n"
+        "▸ `  !lastname <фам>` — сменить фамилию\n"
+        "▸ `  !bio <текст>  ` — обновить «о себе»\n"
+        "▸ `  !whois @ник   ` — информация о пользователе\n"
+        "▸ `  !username_check @ник` — проверить занят ли username"
     ),
     'игры': (
         "🎮 **ИГРЫ**\n\n"
-        "▸ `  /dice /dart /basket /football /bowling /casino` — анимированные emoji\n"
-        "▸ `  /coin      ` — подбросить монетку\n"
-        "▸ `  /rand [a] [b]` — случайное число oт a до b\n"
-        "▸ `  /8ball [вопрос]` — магический шар\n"
-        "▸ `  /rps [к/н/б]` — камень-ножницы-бумага\n"
-        "▸ `  /slot      ` — слот-машина\n"
-        "▸ `  /lucky     ` — индекс удачи сегодня\n"
-        "▸ `  /choose A, B` — выбрать из вариантов\n"
-        "▸ `  /quiz      ` — случайный вопрос викторины"
+        "▸ `  !dice / !dart / !basket / !football / !bowling / !casino` — анимированные emoji\n"
+        "▸ `  !coin      ` — подбросить монетку\n"
+        "▸ `  !rand [a] [b]` — случайное число oт a до b\n"
+        "▸ `  !8ball [вопрос]` — магический шар\n"
+        "▸ `  !rps [к/н/б]` — камень-ножницы-бумага\n"
+        "▸ `  !slot      ` — слот-машина\n"
+        "▸ `  !lucky     ` — индекс удачи сегодня\n"
+        "▸ `  !choose A, B` — выбрать из вариантов\n"
+        "▸ `  !quiz      ` — случайный вопрос викторины"
     ),
     'утилиты': (
         "🛠 **УТИЛИТЫ**\n\n"
-        "▸ `  /calc <выражение>` — калькулятор\n"
-        "▸ `  /remind <сек> <текст>` — напомнить через N сек\n"
-        "▸ `  /search <запрос>` — ссылки на поисковики\n"
-        "▸ `  /shorten <url>` — сократить ссылку\n"
-        "▸ `  /weather <город>` — ссылки на погоду\n"
-        "▸ `  /translate <текст>` — ссылки на перевод\n"
-        "▸ `  /base64 encode/decode <текст>`\n"
-        "▸ `  /hash <текст>` — MD5, SHA1/256/512\n"
-        "▸ `  /morse <текст>` — азбука Морзе\n"
-        "▸ `  /caesar encode/decode <сдвиг> <текст>`\n"
-        "▸ `  /vigenere encode/decode <ключ> <текст>`\n"
-        "▸ `  /password [длина] [simple]` — генератор паролей\n"
-        "▸ `  /qr <текст>` — QR-код\n"
-        "▸ `  /uuid     ` — 5 случайных UUID\n"
-        "▸ `  /color <#HEX|R,G,B>` — HEX/HSL цвета\n"
-        "▸ `  /ascii <текст>` — ASCII коды символов"
+        "▸ `  !calc <выражение>` — калькулятор\n"
+        "▸ `  !remind <сек> <текст>` — напомнить через N сек\n"
+        "▸ `  !search <запрос>` — ссылки на поисковики\n"
+        "▸ `  !shorten <url>` — сократить ссылку\n"
+        "▸ `  !weather <город>` — ссылки на погоду\n"
+        "▸ `  !translate <текст>` — ссылки на перевод\n"
+        "▸ `  !base64 encode/decode <текст>`\n"
+        "▸ `  !hash <текст>` — MD5, SHA1/256/512\n"
+        "▸ `  !morse <текст>` — азбука Морзе\n"
+        "▸ `  !caesar encode/decode <сдвиг> <текст>`\n"
+        "▸ `  !vigenere encode/decode <ключ> <текст>`\n"
+        "▸ `  !password [длина] [simple]` — генератор паролей\n"
+        "▸ `  !qr <текст>` — QR-код\n"
+        "▸ `  !uuid     ` — 5 случайных UUID\n"
+        "▸ `  !color <#HEX|R,G,B>` — HEX/HSL цвета\n"
+        "▸ `  !ascii <текст>` — ASCII коды символов"
     ),
     'сообщения': (
         "✉️ **СООБЩЕНИЯ**\n\n"
-        "▸ `  /type [fast|slow|matrix|glitch] <текст>` — анимация печати\n"
-        "▸ `  /echo <текст>` — повторить текст в чат\n"
-        "▸ `  /bold /italic /mono <текст>` — форматирование\n"
-        "▸ `  /clean [n]` — удалить свои N сообщений\n"
-        "▸ `  /purge [n]` — удалить любые N сообщений\n"
-        "▸ `  /spam <n> <текст>` — спам N сообщений\n"
-        "▸ `  /forward <chat_id>` — переслать ответное сообщение\n"
-        "▸ `  /pin  ` — закрепить ответное сообщение\n"
-        "▸ `  /unpin` — открепить\n"
-        "▸ `  /copyall <n> <chat_id>` — скопировать N сообщений\n"
-        "▸ `  /react <эмодзи>` — поставить реакцию"
+        "▸ `  !type [fast|slow|matrix|glitch] <текст>` — анимация печати\n"
+        "▸ `  !echo <текст>` — повторить текст в чат\n"
+        "▸ `  !bold / !italic / !mono <текст>` — форматирование\n"
+        "▸ `  !clean [n]` — удалить свои N сообщений\n"
+        "▸ `  !purge [n]` — удалить любые N сообщений\n"
+        "▸ `  !spam <n> <текст>` — спам N сообщений\n"
+        "▸ `  !forward <chat_id>` — переслать ответное сообщение\n"
+        "▸ `  !pin  ` — закрепить ответное сообщение\n"
+        "▸ `  !unpin` — открепить\n"
+        "▸ `  !copyall <n> <chat_id>` — скопировать N сообщений\n"
+        "▸ `  !react <эмодзи>` — поставить реакцию"
     ),
     'заметки': (
         "📦 **ЗАМЕТКИ И TODO**\n\n"
         "📁 **Хранилище**\n"
-        "▸ `  /save <ключ> <значение>` — сохранить\n"
-        "▸ `  /get <ключ>` — получить\n"
-        "▸ `  /del <ключ>` — удалить\n"
-        "▸ `  /list` — все сохранённые\n\n"
+        "▸ `  !save <ключ> <значение>` — сохранить\n"
+        "▸ `  !get <ключ>` — получить\n"
+        "▸ `  !del <ключ>` — удалить\n"
+        "▸ `  !list` — все сохранённые\n\n"
         "📝 **Заметки**\n"
-        "▸ `  /note <название> <текст>` — создать\n"
-        "▸ `  /getnote <название>` — открыть\n"
-        "▸ `  /delnote <название>` — удалить\n"
-        "▸ `  /notes` — список заметок\n\n"
+        "▸ `  !note <название> <текст>` — создать\n"
+        "▸ `  !getnote <название>` — открыть\n"
+        "▸ `  !delnote <название>` — удалить\n"
+        "▸ `  !notes` — список заметок\n\n"
         "✅ **TODO**\n"
-        "▸ `  /todo <задача>` — добавить\n"
-        "▸ `  /todos` — список задач\n"
-        "▸ `  /done <N>` — отметить выполненным\n"
-        "▸ `  /undone <N>` — снять отметку\n"
-        "▸ `  /deltodo <N>` — удалить задачу"
+        "▸ `  !todo <задача>` — добавить\n"
+        "▸ `  !todos` — список задач\n"
+        "▸ `  !done <N>` — отметить выполненным\n"
+        "▸ `  !undone <N>` — снять отметку\n"
+        "▸ `  !deltodo <N>` — удалить задачу"
     ),
     'afk': (
         "😴 **AFK**\n\n"
-        "▸ `  /afk [причина]` — уйти в AFK\n"
-        "▸ `  /unafk` — вернуться\n\n"
+        "▸ `  !afk [причина]` — уйти в AFK\n"
+        "▸ `  !unafk` — вернуться\n\n"
         "_Когда кто-то пишет в ЛС, бот ответит что ты AFK_\n"
         "_и сколько времени прошло._"
     ),
     'инфо': (
         "📊 **ИНФОРМАЦИЯ О ЧАТЕ**\n\n"
-        "▸ `  /chatinfo` — данные о текущем чате\n"
-        "▸ `  /members` — сколько участников и ботов\n"
-        "▸ `  /admins` — список администраторов\n"
-        "▸ `  /top [n]` — топ активных за n сообщений\n"
-        "▸ `  /bots` — список ботов в чате"
+        "▸ `  !chatinfo` — данные о текущем чате\n"
+        "▸ `  !members` — сколько участников и ботов\n"
+        "▸ `  !admins` — список администраторов\n"
+        "▸ `  !top [n]` — топ активных за n сообщений\n"
+        "▸ `  !bots` — список ботов в чате"
     ),
     'rp': (
         "🎭 **RP-КОМАНДЫ**\n\n"
@@ -1812,21 +1810,21 @@ HELP_CATS = {
         "└ Пользователь: _«Привет!»_\n"
         "  Ты (ответ): `обнять`\n"
         "  → _Бот: 🤗 {твоё имя} обнял(а) {собеседника}_\n\n"
-        "📋 **Полный список:** `/rphelp`"
+        "📋 **Полный список:** `!rphelp`"
     ),
     'стелс': (
         "🥷 **СТЕЛС-РЕЖИМЫ**\n\n"
-        "▸ `  /cover   ` — скрыть аватар/био\n"
-        "▸ `  /silent  ` — невидимость (без видимых ответов)\n"
-        "▸ `  /shadow  ` — автоудаление команд владельца\n"
-        "▸ `  /lock    ` — блокировка аватара (замена на плейсхолдер)\n"
-        "▸ `  /mute    ` — скрывать приветственные сообщения\n"
-        "▸ `  /hide    ` — включить фейковые стратегии\n"
-        "▸ `  /state   ` — показать статус всех режимов"
+        "▸ `  !cover   ` — скрыть аватар/био\n"
+        "▸ `  !silent  ` — невидимость (без видимых ответов)\n"
+        "▸ `  !shadow  ` — автоудаление команд владельца\n"
+        "▸ `  !lock    ` — блокировка аватара (замена на плейсхолдер)\n"
+        "▸ `  !mute    ` — скрывать приветственные сообщения\n"
+        "▸ `  !hide    ` — включить фейковые стратегии\n"
+        "▸ `  !state   ` — показать статус всех режимов"
     )
 }
 
-@client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
     total_cmds = sum(len(cmds) for cmds in COMMANDS_LIST.values())
@@ -1834,13 +1832,13 @@ async def help_cmd(e):
     if cat:
         if cat not in HELP_CATS:
             cats_list = "\n".join(
-                f"{EMOJI_MAP.get(c, '•')}  `/help {c}`  —  _{DESC_MAP.get(c, '')}_"
+                f"{EMOJI_MAP.get(c, '•')}  `!help {c}`  —  _{DESC_MAP.get(c, '')}_"
                 for c in HELP_CATS
             )
             await e.edit(
                 f"❌ **«{cat}» — нет такой категории**\n\n"
                 f"📚 **Доступные категории:**\n{cats_list}\n\n"
-                f"💡 _Напиши `/help <категория>`_"
+                f"💡 _Напиши `!help <категория>`_"
             )
             await bump_stat('cmds')
             return
@@ -1865,15 +1863,15 @@ async def help_cmd(e):
         "📚  **UserBot Help**  ·  _всего команд `{total}`_\n\n"
         "{cats}\n\n"
         "─── ⋆ ───\n"
-        "💡  `/help <категория>`  — подробнее\n"
-        "📋  `/commands`  — все команды".format(
+        "💡  `!help <категория>`  — подробнее\n"
+        "📋  `!commands`  — все команды".format(
             total=total_cmds,
             cats="\n".join(cats_block)
         )
     )
     await bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'!commands$', from_users='me'))
 async def commands_cmd(e):
     total_cmds = sum(len(cmds) for cmds in COMMANDS_LIST.values())
     blocks = []
