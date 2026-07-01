@@ -244,7 +244,7 @@ def home():
     return "🤖 UserBot работает 24/7!"
 
 def run_web():
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='0.0.0.0', port=PORT)   # исправлено для Render
 
 # ════════════════════════════════════════════════════════════
 # 1. ВСЕ ОСНОВНЫЕ КОМАНДЫ (префикс !)
@@ -1569,7 +1569,7 @@ async def private_handler(event):
         await event.reply(state.auto_reply_text)
 
 # ════════════════════════════════════════════════════════════
-# 4. КОМАНДА /rphelp (теперь !rphelp)
+# 4. КОМАНДА !rphelp (без префикса, но с !)
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(pattern=r'^!rphelp$', func=lambda e: e.is_private))
@@ -1643,7 +1643,7 @@ async def state_cmd(e):
     await e.edit(status)
 
 # ════════════════════════════════════════════════════════════
-# 6. HELP И COMMANDS (обновлены префиксы в тексте)
+# 6. HELP И COMMANDS (обновлены)
 # ════════════════════════════════════════════════════════════
 
 COMMANDS_LIST = {
@@ -1676,7 +1676,7 @@ COMMANDS_LIST = {
     'afk': ['!afk', '!unafk'],
     'инфо': ['!chatinfo', '!members', '!admins', '!top', '!bots'],
     'стелс': ['!cover', '!silent', '!shadow', '!state', '!lock', '!mute', '!hide'],
-    'rp': []   # RP-команды динамические, без префикса
+    # 'rp' удалена из списка, чтобы не показываться в !commands
 }
 
 EMOJI_MAP = {
@@ -1827,7 +1827,6 @@ HELP_CATS = {
 @client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
-    total_cmds = sum(len(cmds) for cmds in COMMANDS_LIST.values())
 
     if cat:
         if cat not in HELP_CATS:
@@ -1851,24 +1850,27 @@ async def help_cmd(e):
         await bump_stat('cmds')
         return
 
-    # Главное меню
-    cats_block = []
-    for cat in HELP_CATS:
-        emoji = EMOJI_MAP.get(cat, '•')
-        count = len(COMMANDS_LIST.get(cat, []))
-        desc = DESC_MAP.get(cat, '')
-        cats_block.append(f"{emoji}  **{cat.capitalize()}**  · `{count}`  _{desc}_")
-
-    await e.edit(
-        "📚  **UserBot Help**  ·  _всего команд `{total}`_\n\n"
-        "{cats}\n\n"
-        "─── ⋆ ───\n"
-        "💡  `!help <категория>`  — подробнее\n"
-        "📋  `!commands`  — все команды".format(
-            total=total_cmds,
-            cats="\n".join(cats_block)
-        )
-    )
+    # --- Главное меню (без аргументов) ---
+    # Формируем строки в точном соответствии с желанием пользователя
+    lines = [
+        "📚 **UserBot Help**",
+        "",
+        "Выбери категорию — скопируй команду и отправь:",
+        "",
+        "⚙️ Основные → `!help основные`",
+        "👤 Профиль → `!help профиль`",
+        "🎮 Игры → `!help игры`",
+        "🛠 Утилиты → `!help утилиты`",
+        "✉️ Сообщения → `!help сообщения`",
+        "📦 Заметки → `!help заметки`",
+        "😴 Afk → `!help afk`",
+        "📊 Инфо → `!help инфо`",
+        "🎭 Rp → `!help rp`",
+        "🥷 Стелс → `!help стелс`",
+        "",
+        "💡 Или просто `!commands` — все команды списком"
+    ]
+    await e.edit("\n".join(lines))
     await bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!commands$', from_users='me'))
