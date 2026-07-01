@@ -25,7 +25,7 @@ from flask import Flask
 from threading import Thread
 import sys
 
-import rp_commands   # должен существовать
+import rp_commands
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -54,7 +54,6 @@ class BotState:
         self.afk_start_time = None
         self.afk_reason = ''
         self.bot_start_time = time.time()
-        # Stealth modes
         self.cover_enabled = False
         self.silent_enabled = False
         self.shadow_enabled = False
@@ -244,7 +243,7 @@ def home():
     return "🤖 UserBot работает 24/7!"
 
 def run_web():
-    app.run(host='0.0.0.0', port=PORT)   # исправлено для Render
+    app.run(host='0.0.0.0', port=PORT)
 
 # ════════════════════════════════════════════════════════════
 # 1. ВСЕ ОСНОВНЫЕ КОМАНДЫ (префикс !)
@@ -1569,7 +1568,7 @@ async def private_handler(event):
         await event.reply(state.auto_reply_text)
 
 # ════════════════════════════════════════════════════════════
-# 4. КОМАНДА !rphelp (без префикса, но с !)
+# 4. КОМАНДА !rphelp
 # ════════════════════════════════════════════════════════════
 
 @client.on(events.NewMessage(pattern=r'^!rphelp$', func=lambda e: e.is_private))
@@ -1584,7 +1583,7 @@ async def rphelp_cmd(event):
         if cmds:
             cat_emoji = {'интимные': '🔞', 'эротические': '🌹', 'агрессивные': '👊', 'романтические': '💕', 'дружеские': '🤝'}
             emoji = cat_emoji.get(category, '•')
-            cmd_line = "  ".join(f"`{c}`" for c in cmds)
+            cmd_line = ", ".join(f"`{c}`" for c in cmds)
             blocks.append(f"{emoji} **{category.upper()}** ({len(cmds)})\n{cmd_line}")
     await event.reply(
         f"🎭 **RP-команды**\n\n"
@@ -1643,7 +1642,7 @@ async def state_cmd(e):
     await e.edit(status)
 
 # ════════════════════════════════════════════════════════════
-# 6. HELP И COMMANDS (обновлены)
+# 6. HELP И COMMANDS
 # ════════════════════════════════════════════════════════════
 
 COMMANDS_LIST = {
@@ -1676,7 +1675,7 @@ COMMANDS_LIST = {
     'afk': ['!afk', '!unafk'],
     'инфо': ['!chatinfo', '!members', '!admins', '!top', '!bots'],
     'стелс': ['!cover', '!silent', '!shadow', '!state', '!lock', '!mute', '!hide'],
-    # 'rp' удалена из списка, чтобы не показываться в !commands
+    # RP исключена из списка, чтобы не показываться в !commands
 }
 
 EMOJI_MAP = {
@@ -1824,6 +1823,12 @@ HELP_CATS = {
     )
 }
 
+def get_rp_command_count():
+    try:
+        return sum(len(rp_commands.get_category_commands(c)) for c in rp_commands.get_all_categories())
+    except:
+        return 0
+
 @client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', from_users='me'))
 async def help_cmd(e):
     cat = (e.pattern_match.group(1) or '').strip().lower()
@@ -1843,30 +1848,38 @@ async def help_cmd(e):
             return
 
         text = HELP_CATS[cat]
-        cmds = COMMANDS_LIST.get(cat, [])
-        if cmds:
-            text += "\n\n──── ⋆ ────\n" + "\n".join(f"  `{cmd}`" for cmd in cmds)
+        if cat == 'rp':
+            all_cmds = []
+            for category in rp_commands.get_all_categories():
+                all_cmds.extend(rp_commands.get_category_commands(category))
+            if all_cmds:
+                cmd_list = ", ".join(f"`{c}`" for c in all_cmds)
+                text += f"\n\n─── ⋆ ───\n**Команды:**\n{cmd_list}"
+        else:
+            cmds = COMMANDS_LIST.get(cat, [])
+            if cmds:
+                text += "\n\n──── ⋆ ────\n" + "\n".join(f"  `{cmd}`" for cmd in cmds)
         await e.edit(text)
         await bump_stat('cmds')
         return
 
-    # --- Главное меню (без аргументов) ---
-    # Формируем строки в точном соответствии с желанием пользователя
+    # --- Главное меню ---
+    rp_count = get_rp_command_count()
     lines = [
         "📚 **UserBot Help**",
         "",
         "Выбери категорию — скопируй команду и отправь:",
         "",
-        "⚙️ Основные → `!help основные`",
-        "👤 Профиль → `!help профиль`",
-        "🎮 Игры → `!help игры`",
-        "🛠 Утилиты → `!help утилиты`",
-        "✉️ Сообщения → `!help сообщения`",
-        "📦 Заметки → `!help заметки`",
-        "😴 Afk → `!help afk`",
-        "📊 Инфо → `!help инфо`",
-        "🎭 Rp → `!help rp`",
-        "🥷 Стелс → `!help стелс`",
+        f"⚙️ Основные → `!help основные`  · `{len(COMMANDS_LIST.get('основные', []))}` команд",
+        f"👤 Профиль → `!help профиль`  · `{len(COMMANDS_LIST.get('профиль', []))}` команд",
+        f"🎮 Игры → `!help игры`  · `{len(COMMANDS_LIST.get('игры', []))}` команд",
+        f"🛠 Утилиты → `!help утилиты`  · `{len(COMMANDS_LIST.get('утилиты', []))}` команд",
+        f"✉️ Сообщения → `!help сообщения`  · `{len(COMMANDS_LIST.get('сообщения', []))}` команд",
+        f"📦 Заметки → `!help заметки`  · `{len(COMMANDS_LIST.get('заметки', []))}` команд",
+        f"😴 Afk → `!help afk`  · `{len(COMMANDS_LIST.get('afk', []))}` команд",
+        f"📊 Инфо → `!help инфо`  · `{len(COMMANDS_LIST.get('инфо', []))}` команд",
+        f"🎭 Rp → `!help rp`  · `{rp_count}` команд",
+        f"🥷 Стелс → `!help стелс`  · `{len(COMMANDS_LIST.get('стелс', []))}` команд",
         "",
         "💡 Или просто `!commands` — все команды списком"
     ]
