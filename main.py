@@ -261,6 +261,12 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         ydl_opts['noplaylist'] = True
         ydl_opts['nocheckcertificate'] = True
         ydl_opts['cachedir'] = False
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android', 'web', 'ios', 'tv', 'android_creator'],
+                'skip': ['webpage', 'js', 'dash', 'hls'],
+            }
+        }
         ffmpeg_dir = _detect_ffmpeg()
         if ffmpeg_dir:
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
@@ -325,7 +331,7 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         if "Sign in" in err_str or "confirm" in err_str.lower():
             cp = _find_cookies()
             if cp:
-                await event_edit_func(f"⚠ YouTube требует авторизации. cookies.txt найден ({cp}), но файл может быть в JSON-формате или куки устарели.\nЭкспортируйте куки в формате **Netscape** (не JSON) через расширение 'Get cookies.txt' или 'cookies.txt'.\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
+                await event_edit_func(f"⚠ YouTube блокирует IP (даже с cookies). Добавлен player_client=android для обхода.\nЕсли ошибка повторится — попробуйте обновить cookies.txt (экспорт в Netscape-формате) или сменить хостинг.\nФайл: {cp}")
             else:
                 await event_edit_func(f"⚠ YouTube требует авторизации. Файл cookies.txt не найден.\nПроверенные пути:\n• {os.path.join(os.path.dirname(__file__), 'cookies.txt')}\n• {os.path.join(os.getcwd(), 'cookies.txt')}\n• cookies.txt\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
         elif "HTTP Error 429" in err_str:
