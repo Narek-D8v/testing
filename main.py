@@ -31,13 +31,6 @@ from storage import Storage
 from rp_commands import RP_COMMANDS, get_rp_reply, format_rp_action, get_all_categories, get_category_commands
 
 
-def fmt_cmd(text):
-    return re.sub(r'`(![^`]+)`', r'[\1](https://t.me/)', text)
-
-
-def fmt_inline(text):
-    return re.sub(r'(?<!\w)(!\w+)', r'[\1](https://t.me/)', text)
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -2376,18 +2369,18 @@ async def help_cmd(e):
         if cmd_name in CMD_DESCS:
             d = CMD_DESCS[cmd_name]
             lines = [
-                f"📖 **Команда:** [!{cmd_name}](https://t.me/)",
+                f"📖 **Команда:** `!{cmd_name}`",
                 f"**Описание:** {d['desc']}",
-                f"**Синтаксис:** {fmt_inline(d['syntax'])}",
-                f"**Пример:** {fmt_inline(d['example'])}",
+                f"**Синтаксис:** `{d['syntax']}`",
+                f"**Пример:** `{d['example']}`",
             ]
-            lines.append("\n💡 Для справки по команде: [!help cmd <команда>](https://t.me/)")
-            lines.append("💡 Для всех команд: [!help all](https://t.me/)")
+            lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
+            lines.append("💡 Для всех команд: `!help all`")
             await e.edit("\n".join(lines))
             db.bump_stat('cmds')
             return
         else:
-            await e.edit(f"❌ Команда `{cmd_name}` не найдена.\n💡 [!help cmd <команда>](https://t.me/)")
+            await e.edit(f"❌ Команда `{cmd_name}` не найдена.\n💡 `!help cmd <команда>`")
             db.bump_stat('cmds')
             return
 
@@ -2395,9 +2388,9 @@ async def help_cmd(e):
         msg = "📋 **Все команды:**\n"
         for cat, cmds in COMMANDS_LIST.items():
             emoji = EMOJI_MAP.get(cat, '•')
-            cmds_str = ", ".join(f"[{cmd}](https://t.me/)" for cmd in cmds)
+            cmds_str = ", ".join(f"`{cmd}`" for cmd in cmds)
             msg += f"\n{emoji} **{cat.capitalize()}:** {cmds_str}\n"
-        msg += "\n💡 Для справки по команде: [!help cmd <команда>](https://t.me/)\n💡 Для всех категорий: [!help <категория>](https://t.me/)"
+        msg += "\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех категорий: `!help <категория>`"
         if len(msg) > 4096:
             msg = msg[:4080] + "\n\n⚠️ Сообщение обрезано (лимит 4096)"
         await e.edit(msg)
@@ -2407,15 +2400,15 @@ async def help_cmd(e):
     if arg:
         cat = arg
         if cat not in HELP_CATS:
-            cats = ', '.join(f"[!help {c}](https://t.me/)" for c in HELP_CATS)
+            cats = ', '.join(f"`!help {c}`" for c in HELP_CATS)
             await e.edit(f"❌ Категория `{cat}` не найдена.\n\nДоступные категории:\n{cats}")
             db.bump_stat('cmds')
             return
-        text = fmt_cmd(HELP_CATS[cat])
+        text = HELP_CATS[cat]
         cmds = COMMANDS_LIST.get(cat, [])
         if cmds:
-            text += "\n\n📋 **Команды для копирования:**\n" + ", ".join(f"[{cmd}](https://t.me/)" for cmd in cmds)
-        text += "\n\n💡 Для справки по команде: [!help cmd <команда>](https://t.me/)\n💡 Для всех команд: [!help all](https://t.me/)"
+            text += "\n\n📋 **Команды для копирования:**\n" + ", ".join(f"`{cmd}`" for cmd in cmds)
+        text += "\n\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех команд: `!help all`"
         await e.edit(text)
         db.bump_stat('cmds')
         return
@@ -2423,16 +2416,16 @@ async def help_cmd(e):
     lines = ["📚 **UserBot Help**\n\nВыбери категорию — скопируй команду и отправь:\n"]
     for cat_name in HELP_CATS:
         emoji = EMOJI_MAP.get(cat_name, '•')
-        lines.append(f"{emoji} `{cat_name.capitalize()}` → [!help {cat_name}](https://t.me/)")
-    lines.append("\n💡 Для справки по команде: [!help cmd <команда>](https://t.me/)")
-    lines.append("💡 Для всех команд: [!help all](https://t.me/)")
+        lines.append(f"{emoji} `{cat_name.capitalize()}` → `!help {cat_name}`")
+    lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
+    lines.append("💡 Для всех команд: `!help all`")
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!commands$', func=lambda e: e.sender_id == 5457847440))
 async def commands_cmd(e):
     if check_cover(e): return
-    await e.edit("ℹ️ Используйте [!help all](https://t.me/) для списка всех команд с описанием.")
+    await e.edit("ℹ️ Используйте `!help all` для списка всех команд с описанием.")
     db.bump_stat('cmds')
 
 if __name__ == "__main__":
