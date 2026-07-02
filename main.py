@@ -187,12 +187,15 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         await event_edit_func("⏳ Уже идёт другая загрузка. Подождите.")
         return None
     is_downloading = True
+    print(f"[_run_download] Starting: {url}")
     try:
         last_progress_update = 0
 
         def hook(d):
             nonlocal last_progress_update
-            if d['status'] == 'downloading':
+            status = d['status']
+            print(f"[hook] status={status}")
+            if status == 'downloading':
                 now = time.time()
                 if now - last_progress_update < 3:
                     return
@@ -206,35 +209,55 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
                 speed_str = f"{speed / 1024 / 1024:.1f} MB/s" if speed else "N/A"
                 eta_str = fmt_time(eta) if eta else "N/A"
                 text = f"📥 **Скачивание...** {pct_str}\n⬇ {speed_str} | ⏱ ~{eta_str}"
+                print(f"[progress] {pct_str} {speed_str} ETA {eta_str}")
                 logger.info(f"Download progress: {pct_str} {speed_str} ETA {eta_str}")
                 try:
                     client.loop.create_task(event_edit_func(text))
-                except Exception:
+                except Exception as e:
+                    print(f"[hook] create_task error: {e}")
                     pass
-            elif d['status'] == 'finished':
-                logger.info(f"Download finished: {d.get('filename', '')}")
+            elif status == 'finished':
+                fn = d.get('filename', '')
+                print(f"[hook] finished: {fn}")
+                logger.info(f"Download finished: {fn}")
 
         ydl_opts['progress_hooks'] = [hook]
         ydl_opts['quiet'] = True
         ydl_opts['no_warnings'] = True
-        if os.path.exists('cookies.txt'):
-            ydl_opts['cookiefile'] = 'cookies.txt'
+        ydl_opts['ffmpeg_location'] = '/usr/bin/ffmpeg' if os.path.exists('/usr/bin/ffmpeg') else None
+        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+            print(f"[cookies] using {cookies_path}")
+        else:
+            print(f"[cookies] {cookies_path} not found")
 
         def _dl():
+            print("[_dl] creating YoutubeDL...")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print("[_dl] extract_info...")
                 info = ydl.extract_info(url, download=True)
-                return ydl.prepare_filename(info)
+                fn = ydl.prepare_filename(info)
+                print(f"[_dl] done, filename={fn}")
+                return fn
 
         loop = asyncio.get_event_loop()
         task = loop.run_in_executor(None, _dl)
+        print("[_run_download] waiting for task...")
         filename = await asyncio.wait_for(task, timeout=timeout)
+        if filename and os.path.exists(filename):
+            print(f"[_run_download] file saved: {filename} ({os.path.getsize(filename)} bytes)")
         return filename
     except asyncio.TimeoutError:
+        print(f"[_run_download] TIMEOUT after {timeout}s: {url}")
         await event_edit_func("❌ Превышено время ожидания (10 мин).")
         logger.warning(f"Download timeout for {url}")
         return None
     except Exception as ex:
         err_str = str(ex)
+        print(f"[_run_download] ERROR: {err_str}")
+        import traceback
+        traceback.print_exc()
         if "Sign in" in err_str or "confirm" in err_str.lower():
             await event_edit_func("⚠ YouTube требует авторизации. Загрузите cookies.txt в корень бота.\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
         elif "HTTP Error 429" in err_str:
@@ -1624,20 +1647,11 @@ async def resetdata_cmd(e):
 
 def _resolve_format(height):
     if not height:
-        return 'best[height<=480]'
+        return 'bestvideo+bestaudio/best'
     if height <= 144:
         return 'worst'
-    if height <= 360:
-        return 'best[height<=360]'
-    if height <= 480:
-        return 'best[height<=480]'
-    if height <= 720:
-        return 'best[height<=720]'
-    if height <= 1080:
-        return 'best[height<=1080]'
-    if height <= 2160:
-        return 'best[height<=2160]'
-    return 'best'
+    h = height
+    return f'bestvideo[height<=?{h}]+bestaudio/best[height<=?{h}]/best'
 
 
 @client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=lambda e: e.sender_id == 5457847440))
@@ -1675,7 +1689,7 @@ async def dl_cmd(e):
         await e.edit(text)
 
     ydl_opts = {
-        'format': 'best[height<=720]',
+        'format': 'bestvideo+bestaudio/best',
         'outtmpl': './media/%(id)s.%(ext)s',
     }
     await edit_fn("⏳ Универсальная загрузка...")
@@ -1707,8 +1721,9 @@ async def playlist_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
-        if os.path.exists('cookies.txt'):
-            ydl_opts['cookiefile'] = 'cookies.txt'
+        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
@@ -1732,7 +1747,7 @@ async def playlist_cmd(e):
             vid_msg = await e.edit(f"⏳ [{i}/{len(selected)}] Загружаю: {entry.get('title', '?')}...")
 
             ydl_opts2 = {
-                'format': 'best[height<=720]',
+                'format': 'bestvideo+bestaudio/best',
                 'outtmpl': './media/%(id)s.%(ext)s',
             }
 
@@ -1806,8 +1821,9 @@ async def sub_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
-        if os.path.exists('cookies.txt'):
-            ydl_opts['cookiefile'] = 'cookies.txt'
+        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
