@@ -12,6 +12,7 @@ import string
 import uuid
 
 import subprocess
+import shutil
 
 import aiohttp
 import yt_dlp
@@ -181,6 +182,15 @@ def format_bytes(n):
     return f"{n:.1f} ТБ"
 
 
+def _detect_ffmpeg():
+    path = shutil.which('ffmpeg')
+    if path:
+        return os.path.dirname(path)
+    if os.path.exists('/usr/bin/ffmpeg'):
+        return '/usr/bin'
+    return None
+
+
 async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
     global is_downloading
     if is_downloading:
@@ -224,7 +234,14 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         ydl_opts['progress_hooks'] = [hook]
         ydl_opts['quiet'] = True
         ydl_opts['no_warnings'] = True
-        ydl_opts['ffmpeg_location'] = '/usr/bin/ffmpeg' if os.path.exists('/usr/bin/ffmpeg') else None
+        ydl_opts['noplaylist'] = True
+        ydl_opts['nocheckcertificate'] = True
+        ydl_opts['cachedir'] = False
+        ffmpeg_dir = _detect_ffmpeg()
+        if ffmpeg_dir:
+            ydl_opts['ffmpeg_location'] = ffmpeg_dir
+        if 'bestvideo+' in str(ydl_opts.get('format', '')):
+            ydl_opts['merge_output_format'] = 'mp4'
         cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
         if os.path.exists(cookies_path):
             ydl_opts['cookiefile'] = cookies_path
@@ -1646,12 +1663,14 @@ async def resetdata_cmd(e):
     db.bump_stat('cmds')
 
 def _resolve_format(height):
+    has_ffmpeg = _detect_ffmpeg() is not None
     if not height:
-        return 'bestvideo+bestaudio/best'
+        return 'bestvideo+bestaudio/best' if has_ffmpeg else 'best'
     if height <= 144:
         return 'worst'
-    h = height
-    return f'bestvideo[height<=?{h}]+bestaudio/best[height<=?{h}]/best'
+    if has_ffmpeg:
+        return f'bestvideo[height<=?{height}]+bestaudio/best[height<=?{height}]/best'
+    return f'best[height<=?{height}]'
 
 
 @client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=lambda e: e.sender_id == 5457847440))
@@ -1689,7 +1708,7 @@ async def dl_cmd(e):
         await e.edit(text)
 
     ydl_opts = {
-        'format': 'bestvideo+bestaudio/best',
+        'format': _resolve_format(None),
         'outtmpl': './media/%(id)s.%(ext)s',
     }
     await edit_fn("⏳ Универсальная загрузка...")
@@ -1747,7 +1766,7 @@ async def playlist_cmd(e):
             vid_msg = await e.edit(f"⏳ [{i}/{len(selected)}] Загружаю: {entry.get('title', '?')}...")
 
             ydl_opts2 = {
-                'format': 'bestvideo+bestaudio/best',
+                'format': _resolve_format(None),
                 'outtmpl': './media/%(id)s.%(ext)s',
             }
 
