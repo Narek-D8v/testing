@@ -301,21 +301,21 @@ def home():
 def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
-@client.on(events.NewMessage(pattern=r'/sleep$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/sleep$', func=lambda e: e.sender_id == 5457847440))
 async def sleep_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(True)
     await e.edit('💤 Автоответчик **ВКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/wake$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/wake$', func=lambda e: e.sender_id == 5457847440))
 async def wake_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(False)
     await e.edit('☀️ Автоответчик **ВЫКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/setreply(?:\s+(@\w+))?(?:\s+(.+))?', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/setreply(?:\s+(@\w+))?(?:\s+(.+))?', func=lambda e: e.sender_id == 5457847440))
 async def setreply_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -333,7 +333,7 @@ async def setreply_cmd(e):
         await e.edit("ℹ️ `/setreply @username текст` или `/setreply default текст`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/status$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/status$', func=lambda e: e.sender_id == 5457847440))
 async def status_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -357,7 +357,7 @@ async def status_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/time$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/time$', func=lambda e: e.sender_id == 5457847440))
 async def time_cmd(e):
     if check_cover(e): return
     now = datetime.datetime.now()
@@ -372,7 +372,7 @@ async def time_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/ping$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/ping$', func=lambda e: e.sender_id == 5457847440))
 async def ping_cmd(e):
     if check_cover(e): return
     t0 = time.monotonic()
@@ -382,7 +382,7 @@ async def ping_cmd(e):
     await e.edit(f"🏓 **Понг!**\n⚡ Задержка: `{ms:.1f} мс`\n📶 Качество: {q}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/id$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/id$', func=lambda e: e.sender_id == 5457847440))
 async def id_cmd(e):
     if check_cover(e): return
     chat = await e.get_chat()
@@ -401,7 +401,7 @@ async def id_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/info$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/info$', func=lambda e: e.sender_id == 5457847440))
 async def info_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -418,7 +418,7 @@ async def info_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/restart$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/restart$', func=lambda e: e.sender_id == 5457847440))
 async def restart_cmd(e):
     if check_cover(e): return
     await e.edit('🔄 Перезагрузка...')
@@ -426,7 +426,7 @@ async def restart_cmd(e):
     await client.disconnect()
     os._exit(0)
 
-@client.on(events.NewMessage(pattern=r'/ghost$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/ghost$', func=lambda e: e.sender_id == 5457847440))
 async def ghost_cmd(e):
     if check_cover(e): return
     state.toggle_ghost()
@@ -438,7 +438,7 @@ async def ghost_cmd(e):
         await e.edit("👁 **Ghost-режим ВЫКЛЮЧЕН**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/cover(?:\s+(off|on))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/cover(?:\s+(off|on))?$', func=lambda e: e.sender_id == 5457847440))
 async def cover_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -449,7 +449,7 @@ async def cover_cmd(e):
         await e.edit("🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `/cover off`, игнорируются.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/silent\s*(on|off)?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/silent\s*(on|off)?$', func=lambda e: e.sender_id == 5457847440))
 async def silent_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -460,7 +460,7 @@ async def silent_cmd(e):
         await e.edit("🔇 **Silent-режим ВКЛЮЧЁН** — бот молчит в ЛС.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/shadow(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/shadow(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
 async def shadow_cmd(e):
     delay = e.pattern_match.group(1)
     if delay:
@@ -475,7 +475,7 @@ async def shadow_cmd(e):
         await e.edit("👤 **Shadow-режим ВКЛЮЧЁН** — удаление через 5 сек.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/lock(?:\s+(on|off))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/lock(?:\s+(on|off))?$', func=lambda e: e.sender_id == 5457847440))
 async def lock_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -486,7 +486,7 @@ async def lock_cmd(e):
         await e.edit("🔒 **Lock-режим ВКЛЮЧЁН** — бот отвечает только контактам.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/mute(?:\s+(on|off))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/mute(?:\s+(on|off))?$', func=lambda e: e.sender_id == 5457847440))
 async def mute_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -497,7 +497,7 @@ async def mute_cmd(e):
         await e.edit("🔇 **Mute-режим ВКЛЮЧЁН** — все ЛС игнорируются.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/online$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/online$', func=lambda e: e.sender_id == 5457847440))
 async def online_cmd(e):
     if check_cover(e): return
     try:
@@ -507,7 +507,7 @@ async def online_cmd(e):
         await e.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/offline$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/offline$', func=lambda e: e.sender_id == 5457847440))
 async def offline_cmd(e):
     if check_cover(e): return
     try:
@@ -517,13 +517,13 @@ async def offline_cmd(e):
         await e.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/status_reset$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/status_reset$', func=lambda e: e.sender_id == 5457847440))
 async def status_reset_cmd(e):
     state.reset_stealth()
     await e.edit("🔄 **Все стелс-режимы сброшены**: cover, silent, shadow, lock, mute — выключены.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/me$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/me$', func=lambda e: e.sender_id == 5457847440))
 async def me_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -540,7 +540,7 @@ async def me_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/avatar$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/avatar$', func=lambda e: e.sender_id == 5457847440))
 async def avatar_cmd(e):
     if check_cover(e): return
     if e.reply_to_msg_id:
@@ -556,7 +556,7 @@ async def avatar_cmd(e):
         await e.edit("❌ Аватарка не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/name (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/name (.+)', func=lambda e: e.sender_id == 5457847440))
 async def name_cmd(e):
     if check_cover(e): return
     n = e.pattern_match.group(1).strip()
@@ -564,7 +564,7 @@ async def name_cmd(e):
     await e.edit(f"✅ Имя → **{n}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/lastname(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/lastname(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def lastname_cmd(e):
     if check_cover(e): return
     n = (e.pattern_match.group(1) or '').strip()
@@ -572,7 +572,7 @@ async def lastname_cmd(e):
     await e.edit(f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/bio(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/bio(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def bio_cmd(e):
     if check_cover(e): return
     t = (e.pattern_match.group(1) or '').strip()
@@ -580,7 +580,7 @@ async def bio_cmd(e):
     await e.edit(f"✅ Био → _{t}_" if t else "✅ Био очищено")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/whois (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/whois (.+)', func=lambda e: e.sender_id == 5457847440))
 async def whois_cmd(e):
     if check_cover(e): return
     target = e.pattern_match.group(1).strip().lstrip('@')
@@ -603,7 +603,7 @@ async def whois_cmd(e):
         await e.edit(f"❌ Не найден: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/username_check (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/username_check (.+)', func=lambda e: e.sender_id == 5457847440))
 async def username_check_cmd(e):
     if check_cover(e): return
     uname = e.pattern_match.group(1).strip().lstrip('@')
@@ -615,49 +615,49 @@ async def username_check_cmd(e):
         await e.edit(f"🔍 @{uname}\n✅ **Свободен**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/dice$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/dice$', func=lambda e: e.sender_id == 5457847440))
 async def dice_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎲'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/dart$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/dart$', func=lambda e: e.sender_id == 5457847440))
 async def dart_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎯'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/basket$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/basket$', func=lambda e: e.sender_id == 5457847440))
 async def basket_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🏀'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/football$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/football$', func=lambda e: e.sender_id == 5457847440))
 async def football_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('⚽'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/bowling$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/bowling$', func=lambda e: e.sender_id == 5457847440))
 async def bowling_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎳'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/casino$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/casino$', func=lambda e: e.sender_id == 5457847440))
 async def casino_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎰'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/coin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/coin$', func=lambda e: e.sender_id == 5457847440))
 async def coin_cmd(e):
     if check_cover(e): return
     sides = ["Орёл 🦅", "Решка 💰"]
@@ -666,7 +666,7 @@ async def coin_cmd(e):
     await e.edit(f"🪙 Монета вращается {flips} раз...\n\nРезультат: **{r}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=lambda e: e.sender_id == 5457847440))
 async def rand_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -680,7 +680,7 @@ async def rand_cmd(e):
         await e.edit(f"🎲 **{random.randint(1, 100)}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/8ball(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/8ball(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def eightball_cmd(e):
     if check_cover(e): return
     ANSWERS = {
@@ -745,7 +745,7 @@ async def eightball_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/rps(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/rps(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def rps_cmd(e):
     if check_cover(e): return
     MAP = {'к': '🪨 Камень', 'камень': '🪨 Камень', 'н': '✂️ Ножницы', 'ножницы': '✂️ Ножницы', 'б': '📄 Бумага', 'бумага': '📄 Бумага'}
@@ -765,7 +765,7 @@ async def rps_cmd(e):
     await e.edit(f"✊✌️🖐 **КНБ**\n\n👤 Ты: {uc}\n🤖 Бот: {bc}\n\n{res}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/slot$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/slot$', func=lambda e: e.sender_id == 5457847440))
 async def slot_cmd(e):
     if check_cover(e): return
     SYM = ['🍒', '🍋', '🍊', '🍇', '🍉', '⭐', '💎', '7️⃣', '🔔', '🍀']
@@ -784,7 +784,7 @@ async def slot_cmd(e):
     await msg.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]\n\n{res}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/lucky$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/lucky$', func=lambda e: e.sender_id == 5457847440))
 async def lucky_cmd(e):
     if check_cover(e): return
     pct = random.randint(0, 100)
@@ -801,7 +801,7 @@ async def lucky_cmd(e):
     await e.edit(f"🔮 **Индекс удачи**\n\n[{bar}] **{pct}%**\n\n{msg}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/choose (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/choose (.+)', func=lambda e: e.sender_id == 5457847440))
 async def choose_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1)
@@ -814,7 +814,7 @@ async def choose_cmd(e):
     await e.edit(f"🤔 **Выбираю из {len(opts)} вариантов...**\n\n{listed}\n\n✅ **Выбор: {winner}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/quiz$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/quiz$', func=lambda e: e.sender_id == 5457847440))
 async def quiz_cmd(e):
     if check_cover(e): return
     QUESTIONS = [
@@ -910,7 +910,7 @@ def vigenere(text, key, dec=False):
             out.append(c)
     return ''.join(out)
 
-@client.on(events.NewMessage(pattern=r'/calc (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/calc (.+)', func=lambda e: e.sender_id == 5457847440))
 async def calc_cmd(e):
     if check_cover(e): return
     expr = e.pattern_match.group(1).strip()
@@ -928,7 +928,7 @@ async def send_reminder(chat_id, msg_text, delay):
     except Exception as e:
         logger.error(f"Ошибка напоминания: {e}")
 
-@client.on(events.NewMessage(pattern=r'/remind (\d+)\s+(.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/remind (\d+)\s+(.+)', func=lambda e: e.sender_id == 5457847440))
 async def remind_cmd(e):
     if check_cover(e): return
     delay = int(e.pattern_match.group(1))
@@ -937,7 +937,7 @@ async def remind_cmd(e):
     asyncio.create_task(send_reminder(e.chat_id, text, delay))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/search (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/search (.+)', func=lambda e: e.sender_id == 5457847440))
 async def search_cmd(e):
     if check_cover(e): return
     q = e.pattern_match.group(1).strip()
@@ -951,7 +951,7 @@ async def search_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/shorten (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/shorten (.+)', func=lambda e: e.sender_id == 5457847440))
 async def shorten_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
@@ -969,7 +969,7 @@ async def shorten_cmd(e):
         await e.edit("❌ Ошибка. Проверь URL.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/weather (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/weather (.+)', func=lambda e: e.sender_id == 5457847440))
 async def weather_cmd(e):
     if check_cover(e): return
     city = e.pattern_match.group(1).strip()
@@ -982,7 +982,7 @@ async def weather_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/translate (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/translate (.+)', func=lambda e: e.sender_id == 5457847440))
 async def translate_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
@@ -995,7 +995,7 @@ async def translate_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/base64 (encode|decode) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/base64 (encode|decode) (.+)', func=lambda e: e.sender_id == 5457847440))
 async def base64_cmd(e):
     if check_cover(e): return
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
@@ -1010,7 +1010,7 @@ async def base64_cmd(e):
         await e.edit("❌ Ошибка. Проверь данные.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/hash (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/hash (.+)', func=lambda e: e.sender_id == 5457847440))
 async def hash_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().encode()
@@ -1023,14 +1023,14 @@ async def hash_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/morse (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/morse (.+)', func=lambda e: e.sender_id == 5457847440))
 async def morse_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
     await e.edit(f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/caesar (encode|decode) (\d+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/caesar (encode|decode) (\d+) (.+)', func=lambda e: e.sender_id == 5457847440))
 async def caesar_cmd(e):
     if check_cover(e): return
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
@@ -1038,7 +1038,7 @@ async def caesar_cmd(e):
     await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/vigenere (encode|decode) (\S+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/vigenere (encode|decode) (\S+) (.+)', func=lambda e: e.sender_id == 5457847440))
 async def vigenere_cmd(e):
     if check_cover(e): return
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
@@ -1046,7 +1046,7 @@ async def vigenere_cmd(e):
     await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/password(?:\s+(\d+))?(?:\s+(simple))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/password(?:\s+(\d+))?(?:\s+(simple))?$', func=lambda e: e.sender_id == 5457847440))
 async def password_cmd(e):
     if check_cover(e): return
     length = max(4, min(int(e.pattern_match.group(1) or 16), 128))
@@ -1056,7 +1056,7 @@ async def password_cmd(e):
     await e.edit(f"🔑 **Пароль ({length} симв.)**\n\n`{pwd}`\n\nСила: {s}\nСимволы: {'✅' if sym else '❌'}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/qr (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/qr (.+)', func=lambda e: e.sender_id == 5457847440))
 async def qr_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().replace(' ', '+')
@@ -1066,7 +1066,7 @@ async def qr_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/uuid$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/uuid$', func=lambda e: e.sender_id == 5457847440))
 async def uuid_cmd(e):
     if check_cover(e): return
     ids = [str(uuid.uuid4()) for _ in range(5)]
@@ -1074,7 +1074,7 @@ async def uuid_cmd(e):
     await e.edit(f"🆔 **Случайные UUID v4:**\n\n{out}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=lambda e: e.sender_id == 5457847440))
 async def color_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1).strip()
@@ -1106,7 +1106,7 @@ async def color_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/ascii (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/ascii (.+)', func=lambda e: e.sender_id == 5457847440))
 async def ascii_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
@@ -1115,7 +1115,7 @@ async def ascii_cmd(e):
     await e.edit(f"🔢 **ASCII коды:**\n_{text}_\n\n`{codes}`\n\nОбратно: `{back}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=lambda e: e.sender_id == 5457847440))
 async def type_cmd(e):
     if check_cover(e): return
     mode = e.pattern_match.group(1) or 'normal'
@@ -1168,42 +1168,42 @@ async def type_cmd(e):
         await msg.edit(text)
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/echo (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/echo (.+)', func=lambda e: e.sender_id == 5457847440))
 async def echo_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/say (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/say (.+)', func=lambda e: e.sender_id == 5457847440))
 async def say_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/bold (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/bold (.+)', func=lambda e: e.sender_id == 5457847440))
 async def bold_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"**{e.pattern_match.group(1).strip()}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/italic (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/italic (.+)', func=lambda e: e.sender_id == 5457847440))
 async def italic_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"__{e.pattern_match.group(1).strip()}__")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/mono (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/mono (.+)', func=lambda e: e.sender_id == 5457847440))
 async def mono_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"`{e.pattern_match.group(1).strip()}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/clean(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/clean(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
 async def clean_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 10)
@@ -1220,7 +1220,7 @@ async def clean_cmd(e):
     await info.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/purge(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/purge(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
 async def purge_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 10)
@@ -1235,7 +1235,7 @@ async def purge_cmd(e):
     await info.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/spam (\d+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/spam (\d+) (.+)', func=lambda e: e.sender_id == 5457847440))
 async def spam_cmd(e):
     if check_cover(e): return
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
@@ -1245,7 +1245,7 @@ async def spam_cmd(e):
         await asyncio.sleep(0.35)
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/forward (-?\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/forward (-?\d+)', func=lambda e: e.sender_id == 5457847440))
 async def forward_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1259,7 +1259,7 @@ async def forward_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/pin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/pin$', func=lambda e: e.sender_id == 5457847440))
 async def pin_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1269,7 +1269,7 @@ async def pin_cmd(e):
     await e.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/unpin$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/unpin$', func=lambda e: e.sender_id == 5457847440))
 async def unpin_cmd(e):
     if check_cover(e): return
     if e.reply_to_msg_id:
@@ -1279,7 +1279,7 @@ async def unpin_cmd(e):
     await e.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/copyall (\d+) (-?\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/copyall (\d+) (-?\d+)', func=lambda e: e.sender_id == 5457847440))
 async def copyall_cmd(e):
     if check_cover(e): return
     count, target = int(e.pattern_match.group(1)), int(e.pattern_match.group(2))
@@ -1299,7 +1299,7 @@ async def copyall_cmd(e):
     await e.edit(f"✅ Скопировано **{copied}/{count}** → `{target}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/react (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/react (.+)', func=lambda e: e.sender_id == 5457847440))
 async def react_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1317,7 +1317,7 @@ async def react_cmd(e):
         await e.edit(f"❌ Не удалось поставить реакцию: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'^/save$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'^/save$', func=lambda e: e.sender_id == 5457847440))
 async def save_media_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1339,7 +1339,7 @@ async def save_media_cmd(e):
         logger.error(f"Save media error: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/save (\S+) (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/save (\S+) (.+)', func=lambda e: e.sender_id == 5457847440))
 async def save_cmd(e):
     if check_cover(e): return
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
@@ -1347,7 +1347,7 @@ async def save_cmd(e):
     await e.edit(f"✅ `{k}` = _{v}_")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/get (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/get (\S+)', func=lambda e: e.sender_id == 5457847440))
 async def get_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1355,7 +1355,7 @@ async def get_cmd(e):
     await e.edit(f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/del (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/del (\S+)', func=lambda e: e.sender_id == 5457847440))
 async def del_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1367,7 +1367,7 @@ async def del_cmd(e):
         await e.edit(f"❌ `{k}` не найден")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/list$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/list$', func=lambda e: e.sender_id == 5457847440))
 async def list_cmd(e):
     if check_cover(e): return
     d = db.all_saved()
@@ -1379,7 +1379,7 @@ async def list_cmd(e):
     await e.edit(f"📦 **Сохранено ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/find (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/find (.+)', func=lambda e: e.sender_id == 5457847440))
 async def find_cmd(e):
     if check_cover(e): return
     query = e.pattern_match.group(1).strip().lower()
@@ -1400,7 +1400,7 @@ async def find_cmd(e):
         await e.edit(f"🔍 **Результаты поиска: {query}**\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/note (\S+)(?: (.+))?', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/note (\S+)(?: (.+))?', func=lambda e: e.sender_id == 5457847440))
 async def note_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1415,7 +1415,7 @@ async def note_cmd(e):
     await e.edit(f"📝 Заметка сохранена: `{k}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/getnote (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/getnote (\S+)', func=lambda e: e.sender_id == 5457847440))
 async def getnote_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1426,7 +1426,7 @@ async def getnote_cmd(e):
         await e.edit(f"❌ Заметка `{k}` не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/delnote (\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/delnote (\S+)', func=lambda e: e.sender_id == 5457847440))
 async def delnote_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1438,7 +1438,7 @@ async def delnote_cmd(e):
         await e.edit(f"❌ `{k}` не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/notes$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/notes$', func=lambda e: e.sender_id == 5457847440))
 async def notes_cmd(e):
     if check_cover(e): return
     d = db.all_notes()
@@ -1450,7 +1450,7 @@ async def notes_cmd(e):
     await e.edit(f"📝 **Заметки ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/todo (.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/todo (.+)', func=lambda e: e.sender_id == 5457847440))
 async def todo_add_cmd(e):
     if check_cover(e): return
     task = e.pattern_match.group(1).strip()
@@ -1459,7 +1459,7 @@ async def todo_add_cmd(e):
     await e.edit(f"✅ Задача добавлена: _{task}_\n📋 Всего: {len(todos)}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/todos$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/todos$', func=lambda e: e.sender_id == 5457847440))
 async def todos_cmd(e):
     if check_cover(e): return
     todos = db.get_todos()
@@ -1475,7 +1475,7 @@ async def todos_cmd(e):
     await e.edit(f"📋 **Список задач** ({done}/{len(todos)} выполнено):\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/done (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/done (\d+)', func=lambda e: e.sender_id == 5457847440))
 async def done_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1487,7 +1487,7 @@ async def done_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/undone (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/undone (\d+)', func=lambda e: e.sender_id == 5457847440))
 async def undone_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1499,7 +1499,7 @@ async def undone_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/deltodo (\d+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/deltodo (\d+)', func=lambda e: e.sender_id == 5457847440))
 async def deltodo_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1511,7 +1511,7 @@ async def deltodo_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/afk(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/afk(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def afk_cmd(e):
     if check_cover(e): return
     reason = (e.pattern_match.group(1) or '').strip()
@@ -1520,7 +1520,7 @@ async def afk_cmd(e):
     await e.edit(f"😴 **AFK включён**{r}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/unafk$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/unafk$', func=lambda e: e.sender_id == 5457847440))
 async def unafk_cmd(e):
     if check_cover(e): return
     dur = state.clear_afk()
@@ -1530,7 +1530,7 @@ async def unafk_cmd(e):
         await e.edit("ℹ️ AFK не был включён")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/chatinfo$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/chatinfo$', func=lambda e: e.sender_id == 5457847440))
 async def chatinfo_cmd(e):
     if check_cover(e): return
     chat = await e.get_chat()
@@ -1552,7 +1552,7 @@ async def chatinfo_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/members$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/members$', func=lambda e: e.sender_id == 5457847440))
 async def members_cmd(e):
     if check_cover(e): return
     try:
@@ -1563,7 +1563,7 @@ async def members_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/admins$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/admins$', func=lambda e: e.sender_id == 5457847440))
 async def admins_cmd(e):
     if check_cover(e): return
     try:
@@ -1577,7 +1577,7 @@ async def admins_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/top(?:\s+(\d+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/top(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
 async def top_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 200)
@@ -1599,7 +1599,7 @@ async def top_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/bots$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/bots$', func=lambda e: e.sender_id == 5457847440))
 async def bots_cmd(e):
     if check_cover(e): return
     try:
@@ -1612,7 +1612,7 @@ async def bots_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/resetdata$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/resetdata$', func=lambda e: e.sender_id == 5457847440))
 async def resetdata_cmd(e):
     if check_cover(e): return
     db.clear_all()
@@ -1643,7 +1643,7 @@ def _resolve_format(height):
     return 'best'
 
 
-@client.on(events.NewMessage(pattern=r'/ytshow\s+(.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/ytshow\s+(.+)', func=lambda e: e.sender_id == 5457847440))
 async def ytshow_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1).strip()
@@ -1669,7 +1669,7 @@ async def ytshow_cmd(e):
         await _send_and_clean(edit_fn, e.chat_id, filename, f"🎬 YouTube: {url}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/dl\s+(.+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/dl\s+(.+)', func=lambda e: e.sender_id == 5457847440))
 async def dl_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
@@ -1692,7 +1692,7 @@ async def dl_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/playlist\s+(.+?)(?:\s+(\d+)(?:-(\d+))?)?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/playlist\s+(.+?)(?:\s+(\d+)(?:-(\d+))?)?$', func=lambda e: e.sender_id == 5457847440))
 async def playlist_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -1755,7 +1755,7 @@ async def playlist_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/audio\s+(.+?)(?:\s+(mp3|m4a|opus))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/audio\s+(.+?)(?:\s+(mp3|m4a|opus))?$', func=lambda e: e.sender_id == 5457847440))
 async def audio_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -1790,7 +1790,7 @@ async def audio_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/sub\s+(.+?)(?:\s+(\w{2}))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/sub\s+(.+?)(?:\s+(\w{2}))?$', func=lambda e: e.sender_id == 5457847440))
 async def sub_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -1831,7 +1831,7 @@ async def sub_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/watch\s+(on|off)$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/watch\s+(on|off)$', func=lambda e: e.sender_id == 5457847440))
 async def watch_cmd(e):
     global _watch_task
     arg = e.pattern_match.group(1)
@@ -1874,7 +1874,7 @@ async def watch_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/check_email\s+(\S+)', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/check_email\s+(\S+)', func=lambda e: e.sender_id == 5457847440))
 async def check_email_cmd(e):
     if check_cover(e): return
     email = e.pattern_match.group(1).strip().lower()
@@ -1908,7 +1908,7 @@ async def check_email_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'/protect\s+(on|off)$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/protect\s+(on|off)$', func=lambda e: e.sender_id == 5457847440))
 async def protect_cmd(e):
     global _protect_task
     arg = e.pattern_match.group(1)
@@ -2359,7 +2359,7 @@ HELP_CATS = {
     ),
 }
 
-@client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/help(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
 async def help_cmd(e):
     if check_cover(e): return
     arg = (e.pattern_match.group(1) or '').strip().lower()
@@ -2429,7 +2429,7 @@ async def help_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'/commands$', from_users='me'))
+@client.on(events.NewMessage(pattern=r'/commands$', func=lambda e: e.sender_id == 5457847440))
 async def commands_cmd(e):
     if check_cover(e): return
     await e.edit("ℹ️ Используйте `/help all` для списка всех команд с описанием.")
