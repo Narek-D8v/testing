@@ -264,8 +264,16 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         ydl_opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['android', 'web', 'ios', 'tv', 'android_creator'],
-                'skip': ['webpage', 'js', 'dash', 'hls'],
+                'skip': ['hls', 'dash', 'js', 'webpage'],
+                'player_skip': ['configs'],
             }
+        }
+        ydl_opts['socket_timeout'] = 30
+        ydl_opts['retries'] = 10
+        ydl_opts['fragment_retries'] = 10
+        ydl_opts['http_headers'] = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
         }
         ffmpeg_dir = _detect_ffmpeg()
         if ffmpeg_dir:
