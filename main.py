@@ -264,8 +264,12 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         ffmpeg_dir = _detect_ffmpeg()
         if ffmpeg_dir:
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
+            print(f"[ffmpeg] found at {ffmpeg_dir}")
+        else:
+            print(f"[ffmpeg] not found, DASH may fall back to best")
         if 'bestvideo+' in str(ydl_opts.get('format', '')):
             ydl_opts['merge_output_format'] = 'mp4'
+            ydl_opts['postprocessor_args'] = ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']
         cookies_path = _find_cookies()
         if cookies_path:
             ydl_opts['cookiefile'] = cookies_path
@@ -296,6 +300,28 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         print(f"[_run_download] ERROR: {err_str}")
         import traceback
         traceback.print_exc()
+        if "format not available" in err_str.lower() and 'bestvideo+' in str(ydl_opts.get('format', '')):
+            print("[_dl] retrying with format='best'...")
+            await event_edit_func("⚠️ DASH-формат недоступен, пробую best...")
+            ydl_opts['format'] = 'best'
+            ydl_opts.pop('merge_output_format', None)
+            ydl_opts.pop('postprocessor_args', None)
+            try:
+                def _dl_retry():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        return ydl.prepare_filename(info)
+                loop = asyncio.get_event_loop()
+                task = loop.run_in_executor(None, _dl_retry)
+                filename = await asyncio.wait_for(task, timeout=timeout)
+                if filename and os.path.exists(filename):
+                    print(f"[_run_download] retry OK: {filename}")
+                return filename
+            except Exception as ex2:
+                print(f"[_dl] retry also failed: {ex2}")
+                await event_edit_func(f"❌ **Ошибка:** {ex2}")
+                logger.error(f"Download retry error: {ex2}")
+                return None
         if "Sign in" in err_str or "confirm" in err_str.lower():
             cp = _find_cookies()
             if cp:
@@ -324,17 +350,21 @@ async def _send_and_clean(event_edit_func, chat_id, filepath, caption=''):
             pass
         return
     if size_mb > 50:
-        await event_edit_func(f"⚠️ Файл {format_bytes(os.path.getsize(filepath))}, сжимаю...")
-        compressed = filepath.rsplit('.', 1)[0] + '_compressed.' + filepath.rsplit('.', 1)[-1]
-        try:
-            subprocess.run([
-                'ffmpeg', '-i', filepath, '-vf', 'scale=min(854,iw):min(480,ih)',
-                '-c:v', 'libx264', '-crf', '28', '-c:a', 'aac', '-y', compressed
-            ], capture_output=True, timeout=120)
-            os.remove(filepath)
-            filepath = compressed
-        except Exception:
-            await event_edit_func("⚠️ Не удалось сжать, отправляю как есть.")
+        ffmpeg_dir = _detect_ffmpeg()
+        if not ffmpeg_dir:
+            await event_edit_func(f"⚠️ Файл {format_bytes(os.path.getsize(filepath))} (ffmpeg не найден, сжатие недоступно).")
+        else:
+            await event_edit_func(f"⚠️ Файл {format_bytes(os.path.getsize(filepath))}, сжимаю...")
+            compressed = filepath.rsplit('.', 1)[0] + '_compressed.' + filepath.rsplit('.', 1)[-1]
+            try:
+                subprocess.run([
+                    os.path.join(ffmpeg_dir, 'ffmpeg'), '-i', filepath, '-vf', 'scale=min(854,iw):min(480,ih)',
+                    '-c:v', 'libx264', '-crf', '28', '-c:a', 'aac', '-y', compressed
+                ], capture_output=True, timeout=120)
+                os.remove(filepath)
+                filepath = compressed
+            except Exception:
+                await event_edit_func("⚠️ Не удалось сжать, отправляю как есть.")
     await event_edit_func("📤 **Отправляю файл...**")
     try:
         await client.send_file(chat_id, filepath, caption=caption)
@@ -1829,6 +1859,7 @@ async def audio_cmd(e):
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': fmt,
+            'preferredquality': '192',
         }],
     }
     await edit_fn(f"⏳ Извлекаю аудио ({fmt.upper()})...")
