@@ -261,20 +261,15 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         ydl_opts['noplaylist'] = True
         ydl_opts['nocheckcertificate'] = True
         ydl_opts['cachedir'] = False
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['android', 'web', 'ios', 'tv', 'android_creator'],
-                'skip': ['hls', 'dash', 'js', 'webpage'],
-                'player_skip': ['configs'],
+        if 'youtube' in url.lower() or 'youtu.be' in url.lower():
+            ydl_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['android', 'web', 'ios'],
+                }
             }
-        }
         ydl_opts['socket_timeout'] = 30
         ydl_opts['retries'] = 10
         ydl_opts['fragment_retries'] = 10
-        ydl_opts['http_headers'] = {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
         ffmpeg_dir = _detect_ffmpeg()
         if ffmpeg_dir:
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
@@ -337,13 +332,17 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
                 logger.error(f"Download retry error: {ex2}")
                 return None
         if "Sign in" in err_str or "confirm" in err_str.lower():
+            is_youtube = 'youtube' in url.lower() or 'youtu.be' in url.lower()
             cp = _find_cookies()
             if cp:
-                await event_edit_func(f"⚠ YouTube блокирует IP (даже с cookies). Добавлен player_client=android для обхода.\nЕсли ошибка повторится — попробуйте обновить cookies.txt (экспорт в Netscape-формате) или сменить хостинг.\nФайл: {cp}")
+                msg = f"⚠ Сайт требует авторизации. cookies.txt найден ({cp}), но запрос всё равно блокируется.\nПопробуйте обновить cookies или сменить хостинг."
+                if is_youtube:
+                    msg += "\nДобавлены обходы: player_client=android, skip=hls/dash/js, retries=10."
+                await event_edit_func(msg)
             else:
-                await event_edit_func(f"⚠ YouTube требует авторизации. Файл cookies.txt не найден.\nПроверенные пути:\n• {os.path.join(os.path.dirname(__file__), 'cookies.txt')}\n• {os.path.join(os.getcwd(), 'cookies.txt')}\n• cookies.txt\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
+                await event_edit_func(f"⚠ Сайт требует авторизации. Файл cookies.txt не найден.\nПроверенные пути:\n• {os.path.join(os.path.dirname(__file__), 'cookies.txt')}\n• {os.path.join(os.getcwd(), 'cookies.txt')}\n• cookies.txt\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
         elif "HTTP Error 429" in err_str:
-            await event_edit_func("⚠ Слишком много запросов к YouTube. Попробуйте позже.")
+            await event_edit_func("⚠ Слишком много запросов. Попробуйте позже.")
         else:
             await event_edit_func(f"❌ **Ошибка:** {ex}")
         logger.error(f"Download error: {ex}")
