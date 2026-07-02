@@ -60,7 +60,7 @@ def progress_bar(val, mx, width=10):
 def check_cover(event):
     if state.cover_enabled:
         text = event.raw_text or ''
-        if not text.startswith('/cover') and not text.startswith('/status_reset'):
+        if not text.startswith('!cover') and not text.startswith('!status_reset'):
             return True
     return False
 
@@ -330,7 +330,7 @@ async def setreply_cmd(e):
         state.set_auto_reply_text(text)
         await e.edit(f"✅ Текст автоответчика:\n_{text}_")
     else:
-        await e.edit("ℹ️ `/setreply @username текст` или `/setreply default текст`")
+        await e.edit("ℹ️ `!setreply @username текст` или `!setreply default текст`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!status$', func=lambda e: e.sender_id == 5457847440))
@@ -446,7 +446,7 @@ async def cover_cmd(e):
         await e.edit("🛡️ **Cover-режим ВЫКЛЮЧЕН** — команды снова работают.")
     else:
         state.set_cover(True)
-        await e.edit("🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `/cover off`, игнорируются.")
+        await e.edit("🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `!cover off`, игнорируются.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!silent\s*(on|off)?$', func=lambda e: e.sender_id == 5457847440))
@@ -753,7 +753,7 @@ async def rps_cmd(e):
     WIN = {'🪨 Камень': '✂️ Ножницы', '✂️ Ножницы': '📄 Бумага', '📄 Бумага': '🪨 Камень'}
     arg = (e.pattern_match.group(1) or '').lower().strip()
     if not arg or arg not in MAP:
-        await e.edit("✊✌️🖐 `/rps камень` / `ножницы` / `бумага` (или `к`/`н`/`б`)")
+        await e.edit("✊✌️🖐 `!rps камень` / `ножницы` / `бумага` (или `к`!`н`!`б`)")
         return
     uc, bc = MAP[arg], random.choice(BOT)
     if uc == bc:
@@ -807,7 +807,7 @@ async def choose_cmd(e):
     raw = e.pattern_match.group(1)
     opts = [o.strip() for o in re.split(r'[,|/]', raw) if o.strip()]
     if len(opts) < 2:
-        await e.edit("ℹ️ Перечисли варианты через запятую: `/choose пицца, суши, бургер`")
+        await e.edit("ℹ️ Перечисли варианты через запятую: `!choose пицца, суши, бургер`")
         return
     winner = random.choice(opts)
     listed = "\n".join(f"{'➡️' if o == winner else '  •'} {o}" for o in opts)
@@ -1249,7 +1249,7 @@ async def spam_cmd(e):
 async def forward_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `/forward [chat_id]`")
+        await e.edit("ℹ️ Ответьте на сообщение: `!forward [chat_id]`")
         return
     try:
         msg = await e.get_reply_message()
@@ -1303,7 +1303,7 @@ async def copyall_cmd(e):
 async def react_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `/react 👍`")
+        await e.edit("ℹ️ Ответьте на сообщение: `!react 👍`")
         return
     emoji = e.pattern_match.group(1).strip()
     try:
@@ -1321,7 +1321,7 @@ async def react_cmd(e):
 async def save_media_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на фото/видео или используйте `/save key value`")
+        await e.edit("ℹ️ Ответьте на фото/видео или используйте `!save key value`")
         return
     replied = await e.get_reply_message()
     if not replied.media:
@@ -1409,7 +1409,7 @@ async def note_cmd(e):
         r = await e.get_reply_message()
         t = r.text or t
     if not t:
-        await e.edit("ℹ️ `/note <название> <текст>` или ответом")
+        await e.edit("ℹ️ `!note <название> <текст>` или ответом")
         return
     db.set_note(k, t)
     await e.edit(f"📝 Заметка сохранена: `{k}`")
@@ -2070,159 +2070,159 @@ async def rphelp_cmd(event):
 
 CMD_DESCS = {
     # основные
-    'sleep':       {'desc': 'Включить автоответчик', 'syntax': '/sleep', 'example': '/sleep'},
-    'wake':        {'desc': 'Выключить автоответчик', 'syntax': '/wake', 'example': '/wake'},
-    'setreply':    {'desc': 'Установить текст ответа', 'syntax': '/setreply [@user|default] [текст]', 'example': '/setreply @username Привет'},
-    'status':      {'desc': 'Полный статус бота', 'syntax': '/status', 'example': '/status'},
-    'time':        {'desc': 'Текущее время и дата', 'syntax': '/time', 'example': '/time'},
-    'ping':        {'desc': 'Проверить задержку', 'syntax': '/ping', 'example': '/ping'},
-    'id':          {'desc': 'ID чата / пользователя', 'syntax': '/id', 'example': '/id'},
-    'info':        {'desc': 'Информация о боте', 'syntax': '/info', 'example': '/info'},
-    'restart':     {'desc': 'Перезапустить бота', 'syntax': '/restart', 'example': '/restart'},
-    'ghost':       {'desc': 'Ghost-режим (автоудаление команд)', 'syntax': '/ghost', 'example': '/ghost'},
-    'resetdata':   {'desc': 'Сбросить все данные ⚠️', 'syntax': '/resetdata', 'example': '/resetdata'},
+    'sleep':       {'desc': 'Включить автоответчик', 'syntax': '!sleep', 'example': '!sleep'},
+    'wake':        {'desc': 'Выключить автоответчик', 'syntax': '!wake', 'example': '!wake'},
+    'setreply':    {'desc': 'Установить текст ответа', 'syntax': '!setreply [@user|default] [текст]', 'example': '!setreply @username Привет'},
+    'status':      {'desc': 'Полный статус бота', 'syntax': '!status', 'example': '!status'},
+    'time':        {'desc': 'Текущее время и дата', 'syntax': '!time', 'example': '!time'},
+    'ping':        {'desc': 'Проверить задержку', 'syntax': '!ping', 'example': '!ping'},
+    'id':          {'desc': 'ID чата / пользователя', 'syntax': '!id', 'example': '!id'},
+    'info':        {'desc': 'Информация о боте', 'syntax': '!info', 'example': '!info'},
+    'restart':     {'desc': 'Перезапустить бота', 'syntax': '!restart', 'example': '!restart'},
+    'ghost':       {'desc': 'Ghost-режим (автоудаление команд)', 'syntax': '!ghost', 'example': '!ghost'},
+    'resetdata':   {'desc': 'Сбросить все данные ⚠️', 'syntax': '!resetdata', 'example': '!resetdata'},
     # стелс
-    'cover':       {'desc': 'Игнор всех команд кроме /cover off', 'syntax': '/cover [on|off]', 'example': '/cover on'},
-    'silent':      {'desc': 'Бот молчит в ЛС', 'syntax': '/silent [on|off]', 'example': '/silent on'},
-    'shadow':      {'desc': 'Автоудаление ответов через N сек', 'syntax': '/shadow [сек]', 'example': '/shadow 10'},
-    'lock':        {'desc': 'Отвечать только контактам', 'syntax': '/lock [on|off]', 'example': '/lock on'},
-    'mute':        {'desc': 'Игнорировать все ЛС', 'syntax': '/mute [on|off]', 'example': '/mute on'},
-    'online':      {'desc': 'Установить статус «онлайн»', 'syntax': '/online', 'example': '/online'},
-    'offline':     {'desc': 'Установить статус «недавно»', 'syntax': '/offline', 'example': '/offline'},
-    'status_reset':{'desc': 'Сбросить все стелс-режимы', 'syntax': '/status_reset', 'example': '/status_reset'},
+    'cover':       {'desc': 'Игнор всех команд кроме /cover off', 'syntax': '!cover [on|off]', 'example': '!cover on'},
+    'silent':      {'desc': 'Бот молчит в ЛС', 'syntax': '!silent [on|off]', 'example': '!silent on'},
+    'shadow':      {'desc': 'Автоудаление ответов через N сек', 'syntax': '!shadow [сек]', 'example': '!shadow 10'},
+    'lock':        {'desc': 'Отвечать только контактам', 'syntax': '!lock [on|off]', 'example': '!lock on'},
+    'mute':        {'desc': 'Игнорировать все ЛС', 'syntax': '!mute [on|off]', 'example': '!mute on'},
+    'online':      {'desc': 'Установить статус «онлайн»', 'syntax': '!online', 'example': '!online'},
+    'offline':     {'desc': 'Установить статус «недавно»', 'syntax': '!offline', 'example': '!offline'},
+    'status_reset':{'desc': 'Сбросить все стелс-режимы', 'syntax': '!status_reset', 'example': '!status_reset'},
     # профиль
-    'me':           {'desc': 'Мой профиль', 'syntax': '/me', 'example': '/me'},
-    'avatar':       {'desc': 'Получить аватарку', 'syntax': '/avatar', 'example': '/avatar'},
-    'name':         {'desc': 'Сменить имя', 'syntax': '/name [имя]', 'example': '/name НовоеИмя'},
-    'lastname':     {'desc': 'Сменить фамилию', 'syntax': '/lastname [фамилия]', 'example': '/lastname Иванов'},
-    'bio':          {'desc': 'Обновить «о себе»', 'syntax': '/bio [текст]', 'example': '/bio Люблю котиков'},
-    'whois':        {'desc': 'Информация о пользователе', 'syntax': '/whois @ник', 'example': '/whois @durov'},
-    'username_check': {'desc': 'Проверить занятость username', 'syntax': '/username_check @ник', 'example': '/username_check @test'},
+    'me':           {'desc': 'Мой профиль', 'syntax': '!me', 'example': '!me'},
+    'avatar':       {'desc': 'Получить аватарку', 'syntax': '!avatar', 'example': '!avatar'},
+    'name':         {'desc': 'Сменить имя', 'syntax': '!name [имя]', 'example': '!name НовоеИмя'},
+    'lastname':     {'desc': 'Сменить фамилию', 'syntax': '!lastname [фамилия]', 'example': '!lastname Иванов'},
+    'bio':          {'desc': 'Обновить «о себе»', 'syntax': '!bio [текст]', 'example': '!bio Люблю котиков'},
+    'whois':        {'desc': 'Информация о пользователе', 'syntax': '!whois @ник', 'example': '!whois @durov'},
+    'username_check': {'desc': 'Проверить занятость username', 'syntax': '!username_check @ник', 'example': '!username_check @test'},
     # игры
-    'dice':         {'desc': 'Кинуть кубик', 'syntax': '/dice', 'example': '/dice'},
-    'dart':         {'desc': 'Кинуть дротик', 'syntax': '/dart', 'example': '/dart'},
-    'basket':       {'desc': 'Бросить мяч', 'syntax': '/basket', 'example': '/basket'},
-    'football':     {'desc': 'Удар по мячу', 'syntax': '/football', 'example': '/football'},
-    'bowling':      {'desc': 'Боулинг', 'syntax': '/bowling', 'example': '/bowling'},
-    'casino':       {'desc': 'Игровой автомат', 'syntax': '/casino', 'example': '/casino'},
-    'coin':         {'desc': 'Подбросить монетку', 'syntax': '/coin', 'example': '/coin'},
-    'rand':         {'desc': 'Случайное число', 'syntax': '/rand [a] [b]', 'example': '/rand 1 100'},
-    '8ball':        {'desc': 'Магический шар', 'syntax': '/8ball [вопрос]', 'example': '/8ball Сегодня будет удача?'},
-    'rps':          {'desc': 'Камень-ножницы-бумага', 'syntax': '/rps [к/н/б]', 'example': '/rps камень'},
-    'slot':         {'desc': 'Слот-машина', 'syntax': '/slot', 'example': '/slot'},
-    'lucky':        {'desc': 'Индекс удачи', 'syntax': '/lucky', 'example': '/lucky'},
-    'choose':       {'desc': 'Случайный выбор', 'syntax': '/choose [вар1, вар2]', 'example': '/choose пицца, суши'},
-    'quiz':         {'desc': 'Викторина', 'syntax': '/quiz', 'example': '/quiz'},
+    'dice':         {'desc': 'Кинуть кубик', 'syntax': '!dice', 'example': '!dice'},
+    'dart':         {'desc': 'Кинуть дротик', 'syntax': '!dart', 'example': '!dart'},
+    'basket':       {'desc': 'Бросить мяч', 'syntax': '!basket', 'example': '!basket'},
+    'football':     {'desc': 'Удар по мячу', 'syntax': '!football', 'example': '!football'},
+    'bowling':      {'desc': 'Боулинг', 'syntax': '!bowling', 'example': '!bowling'},
+    'casino':       {'desc': 'Игровой автомат', 'syntax': '!casino', 'example': '!casino'},
+    'coin':         {'desc': 'Подбросить монетку', 'syntax': '!coin', 'example': '!coin'},
+    'rand':         {'desc': 'Случайное число', 'syntax': '!rand [a] [b]', 'example': '!rand 1 100'},
+    '8ball':        {'desc': 'Магический шар', 'syntax': '!8ball [вопрос]', 'example': '!8ball Сегодня будет удача?'},
+    'rps':          {'desc': 'Камень-ножницы-бумага', 'syntax': '!rps [к/н/б]', 'example': '!rps камень'},
+    'slot':         {'desc': 'Слот-машина', 'syntax': '!slot', 'example': '!slot'},
+    'lucky':        {'desc': 'Индекс удачи', 'syntax': '!lucky', 'example': '!lucky'},
+    'choose':       {'desc': 'Случайный выбор', 'syntax': '!choose [вар1, вар2]', 'example': '!choose пицца, суши'},
+    'quiz':         {'desc': 'Викторина', 'syntax': '!quiz', 'example': '!quiz'},
     # youtube
-    'ytshow':       {'desc': 'Скачать и отправить видео с YouTube', 'syntax': '/ytshow <URL> [качество]', 'example': '/ytshow https://youtu.be/... 720'},
-    'dl':           {'desc': 'Универсальная загрузка', 'syntax': '/dl <URL>', 'example': '/dl https://www.tiktok.com/@user/video/123'},
-    'playlist':     {'desc': 'Скачать плейлист', 'syntax': '/playlist <URL> [кол-во] | [start-end]', 'example': '/playlist https://youtube.com/playlist?list=... 5'},
-    'audio':        {'desc': 'Скачать аудио (MP3/M4A/OPUS)', 'syntax': '/audio <URL> [формат]', 'example': '/audio https://youtu.be/... mp3'},
-    'sub':          {'desc': 'Скачать субтитры', 'syntax': '/sub <URL> [язык]', 'example': '/sub https://youtu.be/... ru'},
+    'ytshow':       {'desc': 'Скачать и отправить видео с YouTube', 'syntax': '!ytshow <URL> [качество]', 'example': '!ytshow https://youtu.be/... 720'},
+    'dl':           {'desc': 'Универсальная загрузка', 'syntax': '!dl <URL>', 'example': '!dl https://www.tiktok.com/@user/video/123'},
+    'playlist':     {'desc': 'Скачать плейлист', 'syntax': '!playlist <URL> [кол-во] | [start-end]', 'example': '!playlist https://youtube.com/playlist?list=... 5'},
+    'audio':        {'desc': 'Скачать аудио (MP3/M4A/OPUS)', 'syntax': '!audio <URL> [формат]', 'example': '!audio https://youtu.be/... mp3'},
+    'sub':          {'desc': 'Скачать субтитры', 'syntax': '!sub <URL> [язык]', 'example': '!sub https://youtu.be/... ru'},
     # утилиты
-    'calc':         {'desc': 'Калькулятор', 'syntax': '/calc [выражение]', 'example': '/calc 2+2*2'},
-    'remind':       {'desc': 'Напоминание', 'syntax': '/remind [сек] [текст]', 'example': '/remind 60 Поставить чайник'},
-    'search':       {'desc': 'Поисковики', 'syntax': '/search [запрос]', 'example': '/search Python'},
-    'shorten':      {'desc': 'Сократить ссылку', 'syntax': '/shorten [url]', 'example': '/shorten https://example.com'},
-    'weather':      {'desc': 'Ссылки на погоду', 'syntax': '/weather [город]', 'example': '/weather Москва'},
-    'translate':    {'desc': 'Ссылки на перевод', 'syntax': '/translate [текст]', 'example': '/translate Hello'},
-    'base64':       {'desc': 'Base64 кодирование/декодирование', 'syntax': '/base64 encode|decode [текст]', 'example': '/base64 encode Привет'},
-    'hash':         {'desc': 'Хэши (MD5/SHA)', 'syntax': '/hash [текст]', 'example': '/hash password'},
-    'morse':        {'desc': 'Азбука Морзе', 'syntax': '/morse [текст]', 'example': '/morse SOS'},
-    'caesar':       {'desc': 'Шифр Цезаря', 'syntax': '/caesar encode|decode [сдвиг] [текст]', 'example': '/caesar encode 3 Привет'},
-    'vigenere':     {'desc': 'Шифр Виженера', 'syntax': '/vigenere encode|decode [ключ] [текст]', 'example': '/vigenere encode key Привет'},
-    'password':     {'desc': 'Генератор паролей', 'syntax': '/password [длина] [simple]', 'example': '/password 20'},
-    'qr':           {'desc': 'QR-код', 'syntax': '/qr [текст]', 'example': '/qr https://example.com'},
-    'uuid':         {'desc': 'Генератор UUID', 'syntax': '/uuid', 'example': '/uuid'},
-    'color':        {'desc': 'Информация о цвете', 'syntax': '/color [#HEX или R,G,B]', 'example': '/color #FF0000'},
-    'ascii':        {'desc': 'ASCII коды символов', 'syntax': '/ascii [текст]', 'example': '/ascii Hello'},
+    'calc':         {'desc': 'Калькулятор', 'syntax': '!calc [выражение]', 'example': '!calc 2+2*2'},
+    'remind':       {'desc': 'Напоминание', 'syntax': '!remind [сек] [текст]', 'example': '!remind 60 Поставить чайник'},
+    'search':       {'desc': 'Поисковики', 'syntax': '!search [запрос]', 'example': '!search Python'},
+    'shorten':      {'desc': 'Сократить ссылку', 'syntax': '!shorten [url]', 'example': '!shorten https://example.com'},
+    'weather':      {'desc': 'Ссылки на погоду', 'syntax': '!weather [город]', 'example': '!weather Москва'},
+    'translate':    {'desc': 'Ссылки на перевод', 'syntax': '!translate [текст]', 'example': '!translate Hello'},
+    'base64':       {'desc': 'Base64 кодирование/декодирование', 'syntax': '!base64 encode|decode [текст]', 'example': '!base64 encode Привет'},
+    'hash':         {'desc': 'Хэши (MD5/SHA)', 'syntax': '!hash [текст]', 'example': '!hash password'},
+    'morse':        {'desc': 'Азбука Морзе', 'syntax': '!morse [текст]', 'example': '!morse SOS'},
+    'caesar':       {'desc': 'Шифр Цезаря', 'syntax': '!caesar encode|decode [сдвиг] [текст]', 'example': '!caesar encode 3 Привет'},
+    'vigenere':     {'desc': 'Шифр Виженера', 'syntax': '!vigenere encode|decode [ключ] [текст]', 'example': '!vigenere encode key Привет'},
+    'password':     {'desc': 'Генератор паролей', 'syntax': '!password [длина] [simple]', 'example': '!password 20'},
+    'qr':           {'desc': 'QR-код', 'syntax': '!qr [текст]', 'example': '!qr https://example.com'},
+    'uuid':         {'desc': 'Генератор UUID', 'syntax': '!uuid', 'example': '!uuid'},
+    'color':        {'desc': 'Информация о цвете', 'syntax': '!color [#HEX или R,G,B]', 'example': '!color #FF0000'},
+    'ascii':        {'desc': 'ASCII коды символов', 'syntax': '!ascii [текст]', 'example': '!ascii Hello'},
     # сообщения
-    'type':         {'desc': 'Печать текста с эффектом', 'syntax': '/type [fast|slow|matrix|glitch] [текст]', 'example': '/type slow Привет'},
-    'echo':         {'desc': 'Отправить сообщение', 'syntax': '/echo [текст]', 'example': '/echo Тест'},
-    'say':          {'desc': 'Отправить сообщение (алиас)', 'syntax': '/say [текст]', 'example': '/say Привет'},
-    'bold':         {'desc': 'Жирный текст', 'syntax': '/bold [текст]', 'example': '/bold Важно'},
-    'italic':       {'desc': 'Курсивный текст', 'syntax': '/italic [текст]', 'example': '/italic Цитата'},
-    'mono':         {'desc': 'Моноширинный текст', 'syntax': '/mono [текст]', 'example': '/mono code'},
-    'clean':        {'desc': 'Удалить свои N сообщений', 'syntax': '/clean [n]', 'example': '/clean 5'},
-    'purge':        {'desc': 'Удалить любые N сообщений', 'syntax': '/purge [n]', 'example': '/purge 10'},
-    'spam':         {'desc': 'Спам N сообщений', 'syntax': '/spam [n] [текст]', 'example': '/spam 5 Привет'},
-    'forward':      {'desc': 'Переслать сообщение в чат', 'syntax': '/forward [chat_id]', 'example': '/forward -100123456789'},
-    'pin':          {'desc': 'Закрепить сообщение', 'syntax': '/pin', 'example': '/pin'},
-    'unpin':        {'desc': 'Открепить сообщение', 'syntax': '/unpin', 'example': '/unpin'},
-    'copyall':      {'desc': 'Копировать N сообщений в чат', 'syntax': '/copyall [n] [chat_id]', 'example': '/copyall 50 -100123456789'},
-    'react':        {'desc': 'Поставить реакцию', 'syntax': '/react [эмодзи]', 'example': '/react 👍'},
+    'type':         {'desc': 'Печать текста с эффектом', 'syntax': '!type [fast|slow|matrix|glitch] [текст]', 'example': '!type slow Привет'},
+    'echo':         {'desc': 'Отправить сообщение', 'syntax': '!echo [текст]', 'example': '!echo Тест'},
+    'say':          {'desc': 'Отправить сообщение (алиас)', 'syntax': '!say [текст]', 'example': '!say Привет'},
+    'bold':         {'desc': 'Жирный текст', 'syntax': '!bold [текст]', 'example': '!bold Важно'},
+    'italic':       {'desc': 'Курсивный текст', 'syntax': '!italic [текст]', 'example': '!italic Цитата'},
+    'mono':         {'desc': 'Моноширинный текст', 'syntax': '!mono [текст]', 'example': '!mono code'},
+    'clean':        {'desc': 'Удалить свои N сообщений', 'syntax': '!clean [n]', 'example': '!clean 5'},
+    'purge':        {'desc': 'Удалить любые N сообщений', 'syntax': '!purge [n]', 'example': '!purge 10'},
+    'spam':         {'desc': 'Спам N сообщений', 'syntax': '!spam [n] [текст]', 'example': '!spam 5 Привет'},
+    'forward':      {'desc': 'Переслать сообщение в чат', 'syntax': '!forward [chat_id]', 'example': '!forward -100123456789'},
+    'pin':          {'desc': 'Закрепить сообщение', 'syntax': '!pin', 'example': '!pin'},
+    'unpin':        {'desc': 'Открепить сообщение', 'syntax': '!unpin', 'example': '!unpin'},
+    'copyall':      {'desc': 'Копировать N сообщений в чат', 'syntax': '!copyall [n] [chat_id]', 'example': '!copyall 50 -100123456789'},
+    'react':        {'desc': 'Поставить реакцию', 'syntax': '!react [эмодзи]', 'example': '!react 👍'},
     # заметки
-    'save':         {'desc': 'Сохранить значение по ключу / сохранить медиа', 'syntax': '/save <ключ> <значение> | /save (в ответ на медиа)', 'example': '/save пароль 12345'},
-    'get':          {'desc': 'Получить значение по ключу', 'syntax': '/get <ключ>', 'example': '/get пароль'},
-    'del':          {'desc': 'Удалить значение по ключу', 'syntax': '/del <ключ>', 'example': '/del пароль'},
-    'list':         {'desc': 'Список всех сохранённых данных', 'syntax': '/list', 'example': '/list'},
-    'find':         {'desc': 'Поиск по сохранённым данным и заметкам', 'syntax': '/find <слово>', 'example': '/find пароль'},
-    'note':         {'desc': 'Сохранить заметку', 'syntax': '/note <название> <текст>', 'example': '/note Идея Купить молоко'},
-    'getnote':      {'desc': 'Получить заметку', 'syntax': '/getnote <название>', 'example': '/getnote Идея'},
-    'delnote':      {'desc': 'Удалить заметку', 'syntax': '/delnote <название>', 'example': '/delnote Идея'},
-    'notes':        {'desc': 'Список всех заметок', 'syntax': '/notes', 'example': '/notes'},
-    'todo':         {'desc': 'Добавить задачу', 'syntax': '/todo <текст>', 'example': '/todo Купить молоко'},
-    'todos':        {'desc': 'Список всех задач', 'syntax': '/todos', 'example': '/todos'},
-    'done':         {'desc': 'Отметить задачу выполненной', 'syntax': '/done <номер>', 'example': '/done 1'},
-    'undone':       {'desc': 'Снять отметку выполнения', 'syntax': '/undone <номер>', 'example': '/undone 1'},
-    'deltodo':      {'desc': 'Удалить задачу', 'syntax': '/deltodo <номер>', 'example': '/deltodo 1'},
+    'save':         {'desc': 'Сохранить значение по ключу / сохранить медиа', 'syntax': '!save <ключ> <значение> | /save (в ответ на медиа)', 'example': '!save пароль 12345'},
+    'get':          {'desc': 'Получить значение по ключу', 'syntax': '!get <ключ>', 'example': '!get пароль'},
+    'del':          {'desc': 'Удалить значение по ключу', 'syntax': '!del <ключ>', 'example': '!del пароль'},
+    'list':         {'desc': 'Список всех сохранённых данных', 'syntax': '!list', 'example': '!list'},
+    'find':         {'desc': 'Поиск по сохранённым данным и заметкам', 'syntax': '!find <слово>', 'example': '!find пароль'},
+    'note':         {'desc': 'Сохранить заметку', 'syntax': '!note <название> <текст>', 'example': '!note Идея Купить молоко'},
+    'getnote':      {'desc': 'Получить заметку', 'syntax': '!getnote <название>', 'example': '!getnote Идея'},
+    'delnote':      {'desc': 'Удалить заметку', 'syntax': '!delnote <название>', 'example': '!delnote Идея'},
+    'notes':        {'desc': 'Список всех заметок', 'syntax': '!notes', 'example': '!notes'},
+    'todo':         {'desc': 'Добавить задачу', 'syntax': '!todo <текст>', 'example': '!todo Купить молоко'},
+    'todos':        {'desc': 'Список всех задач', 'syntax': '!todos', 'example': '!todos'},
+    'done':         {'desc': 'Отметить задачу выполненной', 'syntax': '!done <номер>', 'example': '!done 1'},
+    'undone':       {'desc': 'Снять отметку выполнения', 'syntax': '!undone <номер>', 'example': '!undone 1'},
+    'deltodo':      {'desc': 'Удалить задачу', 'syntax': '!deltodo <номер>', 'example': '!deltodo 1'},
     # afk
-    'afk':          {'desc': 'Включить AFK-режим', 'syntax': '/afk [причина]', 'example': '/afk Сплю'},
-    'unafk':        {'desc': 'Выключить AFK-режим', 'syntax': '/unafk', 'example': '/unafk'},
+    'afk':          {'desc': 'Включить AFK-режим', 'syntax': '!afk [причина]', 'example': '!afk Сплю'},
+    'unafk':        {'desc': 'Выключить AFK-режим', 'syntax': '!unafk', 'example': '!unafk'},
     # инфо
-    'chatinfo':     {'desc': 'Информация о чате', 'syntax': '/chatinfo', 'example': '/chatinfo'},
-    'members':      {'desc': 'Количество участников', 'syntax': '/members', 'example': '/members'},
-    'admins':       {'desc': 'Список администраторов', 'syntax': '/admins', 'example': '/admins'},
-    'top':          {'desc': 'Топ активных пользователей', 'syntax': '/top [n]', 'example': '/top 100'},
-    'bots':         {'desc': 'Список ботов в чате', 'syntax': '/bots', 'example': '/bots'},
+    'chatinfo':     {'desc': 'Информация о чате', 'syntax': '!chatinfo', 'example': '!chatinfo'},
+    'members':      {'desc': 'Количество участников', 'syntax': '!members', 'example': '!members'},
+    'admins':       {'desc': 'Список администраторов', 'syntax': '!admins', 'example': '!admins'},
+    'top':          {'desc': 'Топ активных пользователей', 'syntax': '!top [n]', 'example': '!top 100'},
+    'bots':         {'desc': 'Список ботов в чате', 'syntax': '!bots', 'example': '!bots'},
     # безопасность
-    'watch':        {'desc': 'Мониторинг новых сессий', 'syntax': '/watch [on|off]', 'example': '/watch on'},
-    'check_email':  {'desc': 'Проверить email на утечки (HIBP)', 'syntax': '/check_email <email>', 'example': '/check_email test@example.com'},
-    'protect':      {'desc': 'Защита от удаления чатов', 'syntax': '/protect [on|off]', 'example': '/protect on'},
+    'watch':        {'desc': 'Мониторинг новых сессий', 'syntax': '!watch [on|off]', 'example': '!watch on'},
+    'check_email':  {'desc': 'Проверить email на утечки (HIBP)', 'syntax': '!check_email <email>', 'example': '!check_email test@example.com'},
+    'protect':      {'desc': 'Защита от удаления чатов', 'syntax': '!protect [on|off]', 'example': '!protect on'},
     # rp
-    'rphelp':       {'desc': 'Список RP-команд', 'syntax': '/rphelp', 'example': '/rphelp'},
+    'rphelp':       {'desc': 'Список RP-команд', 'syntax': '!rphelp', 'example': '!rphelp'},
 }
 
 COMMANDS_LIST = {
     'основные': [
-        '/sleep', '/wake', '/setreply', '/status', '/time', '/ping',
-        '/id', '/info', '/restart', '/ghost', '/resetdata'
+        '!sleep', '!wake', '!setreply', '!status', '!time', '!ping',
+        '!id', '!info', '!restart', '!ghost', '!resetdata'
     ],
     'стелс': [
-        '/cover', '/silent', '/shadow', '/lock', '/mute',
-        '/online', '/offline', '/status_reset'
+        '!cover', '!silent', '!shadow', '!lock', '!mute',
+        '!online', '!offline', '!status_reset'
     ],
     'профиль': [
-        '/me', '/avatar', '/name', '/lastname', '/bio', '/whois', '/username_check'
+        '!me', '!avatar', '!name', '!lastname', '!bio', '!whois', '!username_check'
     ],
     'игры': [
-        '/dice', '/dart', '/basket', '/football', '/bowling', '/casino',
-        '/coin', '/rand', '/8ball', '/rps', '/slot', '/lucky', '/choose', '/quiz'
+        '!dice', '!dart', '!basket', '!football', '!bowling', '!casino',
+        '!coin', '!rand', '!8ball', '!rps', '!slot', '!lucky', '!choose', '!quiz'
     ],
     'youtube': [
-        '/ytshow', '/dl', '/playlist', '/audio', '/sub'
+        '!ytshow', '!dl', '!playlist', '!audio', '!sub'
     ],
     'утилиты': [
-        '/calc', '/remind', '/search', '/shorten', '/weather', '/translate',
-        '/base64', '/hash', '/morse', '/caesar', '/vigenere', '/password',
-        '/qr', '/uuid', '/color', '/ascii'
+        '!calc', '!remind', '!search', '!shorten', '!weather', '!translate',
+        '!base64', '!hash', '!morse', '!caesar', '!vigenere', '!password',
+        '!qr', '!uuid', '!color', '!ascii'
     ],
     'сообщения': [
-        '/type', '/echo', '/say', '/bold', '/italic', '/mono',
-        '/clean', '/purge', '/spam', '/forward', '/pin', '/unpin',
-        '/copyall', '/react'
+        '!type', '!echo', '!say', '!bold', '!italic', '!mono',
+        '!clean', '!purge', '!spam', '!forward', '!pin', '!unpin',
+        '!copyall', '!react'
     ],
     'заметки': [
-        '/save', '/get', '/del', '/list', '/find',
-        '/note', '/getnote', '/delnote', '/notes',
-        '/todo', '/todos', '/done', '/undone', '/deltodo'
+        '!save', '!get', '!del', '!list', '!find',
+        '!note', '!getnote', '!delnote', '!notes',
+        '!todo', '!todos', '!done', '!undone', '!deltodo'
     ],
     'безопасность': [
-        '/watch', '/check_email', '/protect'
+        '!watch', '!check_email', '!protect'
     ],
-    'afk': ['/afk', '/unafk'],
-    'инфо': ['/chatinfo', '/members', '/admins', '/top', '/bots'],
-    'rp': ['/rphelp'],
+    'afk': ['!afk', '!unafk'],
+    'инфо': ['!chatinfo', '!members', '!admins', '!top', '!bots'],
+    'rp': ['!rphelp'],
 }
 
 EMOJI_MAP = {
@@ -2234,124 +2234,124 @@ EMOJI_MAP = {
 HELP_CATS = {
     'основные': (
         "⚙️ **ОСНОВНЫЕ КОМАНДЫ**\n\n"
-        "`/sleep` — включить автоответчик\n"
-        "`/wake` — выключить автоответчик\n"
-        "`/setreply [@user | default] [текст]` — текст ответа\n"
-        "`/status` — полный статус бота\n"
-        "`/time` — время и дата\n"
-        "`/ping` — задержка соединения\n"
-        "`/id` — ID чата / пользователя\n"
-        "`/info` — информация о боте\n"
-        "`/restart` — перезапуск\n"
-        "`/ghost` — ghost-режим\n"
-        "`/resetdata` — сброс всех данных ⚠️"
+        "`!sleep` — включить автоответчик\n"
+        "`!wake` — выключить автоответчик\n"
+        "`!setreply [@user | default] [текст]` — текст ответа\n"
+        "`!status` — полный статус бота\n"
+        "`!time` — время и дата\n"
+        "`!ping` — задержка соединения\n"
+        "`!id` — ID чата / пользователя\n"
+        "`!info` — информация о боте\n"
+        "`!restart` — перезапуск\n"
+        "`!ghost` — ghost-режим\n"
+        "`!resetdata` — сброс всех данных ⚠️"
     ),
     'стелс': (
         "🛡️ **СТЕЛС-РЕЖИМЫ**\n\n"
-        "`/cover [on|off]` — игнор всех команд\n"
-        "`/silent [on|off]` — бот молчит в ЛС\n"
-        "`/shadow [сек]` — автоудаление ответов\n"
-        "`/lock [on|off]` — только контактам\n"
-        "`/mute [on|off]` — игнор всех ЛС\n"
-        "`/online` — статус «онлайн»\n"
-        "`/offline` — статус «недавно»\n"
-        "`/status_reset` — сброс всех стелс-режимов"
+        "`!cover [on|off]` — игнор всех команд\n"
+        "`!silent [on|off]` — бот молчит в ЛС\n"
+        "`!shadow [сек]` — автоудаление ответов\n"
+        "`!lock [on|off]` — только контактам\n"
+        "`!mute [on|off]` — игнор всех ЛС\n"
+        "`!online` — статус «онлайн»\n"
+        "`!offline` — статус «недавно»\n"
+        "`!status_reset` — сброс всех стелс-режимов"
     ),
     'профиль': (
         "👤 **ПРОФИЛЬ**\n\n"
-        "`/me` — свой профиль\n"
-        "`/avatar` — своя/чужая аватарка\n"
-        "`/name [имя]` — сменить имя\n"
-        "`/lastname [фамилия]` — сменить фамилию\n"
-        "`/bio [текст]` — обновить «о себе»\n"
-        "`/whois @ник` — инфо о пользователе\n"
-        "`/username_check @ник` — проверить username"
+        "`!me` — свой профиль\n"
+        "`!avatar` — своя/чужая аватарка\n"
+        "`!name [имя]` — сменить имя\n"
+        "`!lastname [фамилия]` — сменить фамилию\n"
+        "`!bio [текст]` — обновить «о себе»\n"
+        "`!whois @ник` — инфо о пользователе\n"
+        "`!username_check @ник` — проверить username"
     ),
     'игры': (
         "🎮 **ИГРЫ И РАЗВЛЕЧЕНИЯ**\n\n"
-        "`/dice` `/dart` `/basket` `/football` `/bowling` `/casino` — анимации TG\n"
-        "`/coin` — монетка\n"
-        "`/rand` — случайное число\n"
-        "`/8ball [вопрос]` — магический шар\n"
-        "`/rps [к/н/б]` — камень-ножницы-бумага\n"
-        "`/slot` — слот-машина\n"
-        "`/lucky` — индекс удачи\n"
-        "`/choose [вар1 | вар2]` — случайный выбор\n"
-        "`/quiz` — викторина"
+        "`!dice` `!dart` `!basket` `!football` `!bowling` `!casino` — анимации TG\n"
+        "`!coin` — монетка\n"
+        "`!rand` — случайное число\n"
+        "`!8ball [вопрос]` — магический шар\n"
+        "`!rps [к/н/б]` — камень-ножницы-бумага\n"
+        "`!slot` — слот-машина\n"
+        "`!lucky` — индекс удачи\n"
+        "`!choose [вар1 | вар2]` — случайный выбор\n"
+        "`!quiz` — викторина"
     ),
     'youtube': (
         "🎬 **ЗАГРУЗКА МЕДИА**\n\n"
-        "`/ytshow <URL> [качество]` — скачать и отправить видео с YouTube\n"
-        "`/dl <URL>` — универсальная загрузка (YouTube, TikTok, Instagram и др.)\n"
-        "`/playlist <URL> [кол-во | start-end]` — загрузка плейлиста (до 50)\n"
-        "`/audio <URL> [mp3|m4a|opus]` — извлечение аудио\n"
-        "`/sub <URL> [ru|en]` — скачать субтитры в SRT\n\n"
+        "`!ytshow <URL> [качество]` — скачать и отправить видео с YouTube\n"
+        "`!dl <URL>` — универсальная загрузка (YouTube, TikTok, Instagram и др.)\n"
+        "`!playlist <URL> [кол-во | start-end]` — загрузка плейлиста (до 50)\n"
+        "`!audio <URL> [mp3|m4a|opus]` — извлечение аудио\n"
+        "`!sub <URL> [ru|en]` — скачать субтитры в SRT\n\n"
         "💡 Прогресс обновляется каждые 5 сек. Таймаут — 10 мин."
     ),
     'утилиты': (
         "🛠 **УТИЛИТЫ**\n\n"
-        "`/calc [выражение]` — калькулятор\n"
-        "`/remind [сек] [текст]` — напоминание\n"
-        "`/search [запрос]` — поисковики\n"
-        "`/shorten [url]` — сократить ссылку\n"
-        "`/weather [город]` — погода\n"
-        "`/translate [текст]` — перевод\n"
-        "`/base64 encode/decode [текст]`\n"
-        "`/hash [текст]` — MD5/SHA хэши\n"
-        "`/morse [текст]` — азбука Морзе\n"
-        "`/caesar encode/decode [сдвиг] [текст]`\n"
-        "`/vigenere encode/decode [ключ] [текст]`\n"
-        "`/password [длина] [simple]`\n"
-        "`/qr [текст]` — QR-код\n"
-        "`/uuid` — UUID v4\n"
-        "`/color [#HEX или R,G,B]`\n"
-        "`/ascii [текст]`"
+        "`!calc [выражение]` — калькулятор\n"
+        "`!remind [сек] [текст]` — напоминание\n"
+        "`!search [запрос]` — поисковики\n"
+        "`!shorten [url]` — сократить ссылку\n"
+        "`!weather [город]` — погода\n"
+        "`!translate [текст]` — перевод\n"
+        "`!base64 encode/decode [текст]`\n"
+        "`!hash [текст]` — MD5/SHA хэши\n"
+        "`!morse [текст]` — азбука Морзе\n"
+        "`!caesar encode/decode [сдвиг] [текст]`\n"
+        "`!vigenere encode/decode [ключ] [текст]`\n"
+        "`!password [длина] [simple]`\n"
+        "`!qr [текст]` — QR-код\n"
+        "`!uuid` — UUID v4\n"
+        "`!color [#HEX или R,G,B]`\n"
+        "`!ascii [текст]`"
     ),
     'сообщения': (
         "✉️ **СООБЩЕНИЯ**\n\n"
-        "`/type [fast/slow/matrix/glitch] [текст]`\n"
-        "`/echo [текст]` / `/say [текст]`\n"
-        "`/bold` `/italic` `/mono` [текст]\n"
-        "`/clean [n]` — удалить свои N сообщений\n"
-        "`/purge [n]` — удалить любые N сообщений\n"
-        "`/spam [n] [текст]`\n"
-        "`/forward [chat_id]`\n"
-        "`/pin` / `/unpin`\n"
-        "`/copyall [n] [chat_id]`\n"
-        "`/react [эмодзи]`\n\n"
-        "📎 **Сохранение медиа:** ответьте на фото/видео → `/save`"
+        "`!type [fast/slow/matrix/glitch] [текст]`\n"
+        "`!echo [текст]` / `!say [текст]`\n"
+        "`!bold` `!italic` `!mono` [текст]\n"
+        "`!clean [n]` — удалить свои N сообщений\n"
+        "`!purge [n]` — удалить любые N сообщений\n"
+        "`!spam [n] [текст]`\n"
+        "`!forward [chat_id]`\n"
+        "`!pin` / `!unpin`\n"
+        "`!copyall [n] [chat_id]`\n"
+        "`!react [эмодзи]`\n\n"
+        "📎 **Сохранение медиа:** ответьте на фото/видео → `!save`"
     ),
     'заметки': (
         "📦 **ЗАМЕТКИ И TODO**\n\n"
-        "**Хранилище:** `/save key val` `/get` `/del` `/list` `/find`\n"
-        "**Медиа:** ответ на фото/видео → `/save`\n"
-        "**Заметки:** `/note` `/getnote` `/delnote` `/notes`\n"
-        "**TODO:** `/todo` `/todos` `/done` `/undone` `/deltodo`"
+        "**Хранилище:** `!save key val` `!get` `!del` `!list` `!find`\n"
+        "**Медиа:** ответ на фото/видео → `!save`\n"
+        "**Заметки:** `!note` `!getnote` `!delnote` `!notes`\n"
+        "**TODO:** `!todo` `!todos` `!done` `!undone` `!deltodo`"
     ),
     'безопасность': (
         "🔐 **БЕЗОПАСНОСТЬ**\n\n"
-        "`/watch [on|off]` — мониторинг новых сессий\n"
-        "`/check_email <email>` — проверка утечек через HIBP\n"
-        "`/protect [on|off]` — защита от удаления чатов"
+        "`!watch [on|off]` — мониторинг новых сессий\n"
+        "`!check_email <email>` — проверка утечек через HIBP\n"
+        "`!protect [on|off]` — защита от удаления чатов"
     ),
     'afk': (
         "😴 **AFK**\n\n"
-        "`/afk [причина]` — включить AFK-режим\n"
-        "`/unafk` — выключить с отчётом времени"
+        "`!afk [причина]` — включить AFK-режим\n"
+        "`!unafk` — выключить с отчётом времени"
     ),
     'инфо': (
         "📊 **ИНФОРМАЦИЯ О ЧАТЕ**\n\n"
-        "`/chatinfo` — информация о чате\n"
-        "`/members` — количество участников\n"
-        "`/admins` — список администраторов\n"
-        "`/top [n]` — топ активных\n"
-        "`/bots` — список ботов"
+        "`!chatinfo` — информация о чате\n"
+        "`!members` — количество участников\n"
+        "`!admins` — список администраторов\n"
+        "`!top [n]` — топ активных\n"
+        "`!bots` — список ботов"
     ),
     'rp': (
         "🎭 **RP-КОМАНДЫ (ролевые)**\n\n"
         "Напишите в ответ (reply) одно слово — бот отправит действие.\n"
         "Через Enter можно добавить свою реплику.\n\n"
-        "**Список команд:** `/rphelp`\n\n"
+        "**Список команд:** `!rphelp`\n\n"
         "**Пример:** ответьте `обнять` + Enter + `Ты моя сладкая`\n"
         "→ отправит `🤗 ...обнял... Ты моя сладкая`\n\n"
         "**Категории:**\n"
@@ -2365,49 +2365,46 @@ async def help_cmd(e):
     arg = (e.pattern_match.group(1) or '').strip().lower()
 
     if arg.startswith('cmd '):
-        cmd_name = arg[4:].strip().lstrip('/')
+        cmd_name = arg[4:].strip().lstrip('!')
         if cmd_name in CMD_DESCS:
             d = CMD_DESCS[cmd_name]
             lines = [
-                f"📖 **Команда:** `/{cmd_name}`",
+                f"📖 **Команда:** `!{cmd_name}`",
                 f"**Описание:** {d['desc']}",
                 f"**Синтаксис:** `{d['syntax']}`",
                 f"**Пример:** `{d['example']}`",
             ]
-            lines.append("\n💡 Для справки по команде: `/help cmd <команда>`")
-            lines.append("💡 Для всех команд: `/help all`")
+            lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
+            lines.append("💡 Для всех команд: `!help all`")
             await e.edit("\n".join(lines))
             db.bump_stat('cmds')
             return
         else:
-            await e.edit(f"❌ Команда `{cmd_name}` не найдена.\n💡 `/help cmd <команда>`")
+            await e.edit(f"❌ Команда `{cmd_name}` не найдена.\n💡 `!help cmd <команда>`")
             db.bump_stat('cmds')
             return
 
     if arg == 'all':
-        lines = ["📋 **Все команды с синтаксисом:**\n"]
+        msg = "📋 **Все команды:**\n"
         for cat, cmds in COMMANDS_LIST.items():
             emoji = EMOJI_MAP.get(cat, '•')
-            lines.append(f"{emoji} **{cat.capitalize()}:**")
+            msg += f"\n{emoji} **{cat.capitalize()}:**\n"
             for cmd in cmds:
-                name = cmd.lstrip('/')
+                name = cmd.lstrip('!')
                 info = CMD_DESCS.get(name, {})
                 desc = info.get('desc', name)
-                syntax = info.get('syntax', '')
-                line = f"  `{cmd}` — {desc}"
-                if syntax:
-                    line += f"\n     📎 `{syntax}`"
-                lines.append(line)
-            lines.append("")
-        lines.append("💡 Для справки по команде: `/help cmd <команда>`")
-        await e.edit("\n".join(lines))
+                msg += f"  `{cmd}` — {desc}\n"
+        msg += "\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех категорий: `!help <категория>`"
+        if len(msg) > 4096:
+            msg = msg[:4080] + "\n\n⚠️ Сообщение обрезано (лимит 4096)"
+        await e.edit(msg)
         db.bump_stat('cmds')
         return
 
     if arg:
         cat = arg
         if cat not in HELP_CATS:
-            cats = '  |  '.join(f"`/help {c}`" for c in HELP_CATS)
+            cats = '  |  '.join(f"`!help {c}`" for c in HELP_CATS)
             await e.edit(f"❌ Категория `{cat}` не найдена.\n\nДоступные категории:\n{cats}")
             db.bump_stat('cmds')
             return
@@ -2415,7 +2412,7 @@ async def help_cmd(e):
         cmds = COMMANDS_LIST.get(cat, [])
         if cmds:
             text += "\n\n📋 **Команды для копирования:**\n" + "\n".join(f"`{cmd}`" for cmd in cmds)
-        text += "\n\n💡 Для справки по команде: `/help cmd <команда>`\n💡 Для всех команд: `/help all`"
+        text += "\n\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех команд: `!help all`"
         await e.edit(text)
         db.bump_stat('cmds')
         return
@@ -2423,16 +2420,16 @@ async def help_cmd(e):
     lines = ["📚 **UserBot Help**\n\nВыбери категорию — скопируй команду и отправь:\n"]
     for cat_name in HELP_CATS:
         emoji = EMOJI_MAP.get(cat_name, '•')
-        lines.append(f"{emoji} `{cat_name.capitalize()}` → `/help {cat_name}`")
-    lines.append("\n💡 Для справки по команде: `/help cmd <команда>`")
-    lines.append("💡 Для всех команд: `/help all`")
+        lines.append(f"{emoji} `{cat_name.capitalize()}` → `!help {cat_name}`")
+    lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
+    lines.append("💡 Для всех команд: `!help all`")
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!commands$', func=lambda e: e.sender_id == 5457847440))
 async def commands_cmd(e):
     if check_cover(e): return
-    await e.edit("ℹ️ Используйте `/help all` для списка всех команд с описанием.")
+    await e.edit("ℹ️ Используйте `!help all` для списка всех команд с описанием.")
     db.bump_stat('cmds')
 
 if __name__ == "__main__":
