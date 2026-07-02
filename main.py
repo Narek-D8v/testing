@@ -181,21 +181,6 @@ def format_bytes(n):
     return f"{n:.1f} ТБ"
 
 
-def _dl_progress_str(p):
-    bar = progress_bar(p.get('pct', 0), 100)
-    speed = p.get('speed', 0)
-    eta = p.get('eta', 0)
-    total = p.get('total_mb', 0)
-    parts = [f"[{bar}] {p['pct']:.0f}%"]
-    if speed:
-        parts.append(f"⬇️ {speed:.1f} MB/s")
-    if eta:
-        parts.append(f"⏱ ~{fmt_time(eta)}")
-    if total:
-        parts.append(f"📦 {total:.1f} MB")
-    return " | ".join(parts)
-
-
 async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
     global is_downloading
     if is_downloading:
@@ -203,26 +188,37 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         return None
     is_downloading = True
     try:
-        progress = {'pct': 0, 'status': 'starting', 'filename': None, 'speed': 0, 'eta': 0, 'total_mb': 0}
+        last_progress_update = 0
 
         def hook(d):
+            nonlocal last_progress_update
             if d['status'] == 'downloading':
+                now = time.time()
+                if now - last_progress_update < 3:
+                    return
+                last_progress_update = now
                 total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
                 down = d.get('downloaded_bytes', 0)
                 speed = d.get('speed', 0)
                 pct = (down / total * 100) if total > 0 else 0
-                progress.update({
-                    'pct': pct, 'speed': speed / 1024 / 1024 if speed else 0,
-                    'eta': d.get('eta', 0), 'status': 'downloading',
-                    'total_mb': total / 1024 / 1024 if total else 0,
-                })
+                eta = d.get('eta', 0)
+                pct_str = f"{pct:.0f}%"
+                speed_str = f"{speed / 1024 / 1024:.1f} MB/s" if speed else "N/A"
+                eta_str = fmt_time(eta) if eta else "N/A"
+                text = f"📥 **Скачивание...** {pct_str}\n⬇ {speed_str} | ⏱ ~{eta_str}"
+                logger.info(f"Download progress: {pct_str} {speed_str} ETA {eta_str}")
+                try:
+                    client.loop.create_task(event_edit_func(text))
+                except Exception:
+                    pass
             elif d['status'] == 'finished':
-                progress['status'] = 'finished'
-                progress['filename'] = d.get('filename', '')
+                logger.info(f"Download finished: {d.get('filename', '')}")
 
         ydl_opts['progress_hooks'] = [hook]
         ydl_opts['quiet'] = True
         ydl_opts['no_warnings'] = True
+        if os.path.exists('cookies.txt'):
+            ydl_opts['cookiefile'] = 'cookies.txt'
 
         def _dl():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -231,19 +227,20 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
 
         loop = asyncio.get_event_loop()
         task = loop.run_in_executor(None, _dl)
-
-        while not task.done():
-            if progress['status'] == 'downloading' and progress['pct'] > 0:
-                await event_edit_func(f"⏳ **Загрузка...**\n{_dl_progress_str(progress)}")
-            await asyncio.sleep(5)
-
         filename = await asyncio.wait_for(task, timeout=timeout)
         return filename
     except asyncio.TimeoutError:
         await event_edit_func("❌ Превышено время ожидания (10 мин).")
+        logger.warning(f"Download timeout for {url}")
         return None
     except Exception as ex:
-        await event_edit_func(f"❌ **Ошибка:** {ex}")
+        err_str = str(ex)
+        if "Sign in" in err_str or "confirm" in err_str.lower():
+            await event_edit_func("⚠ YouTube требует авторизации. Загрузите cookies.txt в корень бота.\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
+        elif "HTTP Error 429" in err_str:
+            await event_edit_func("⚠ Слишком много запросов к YouTube. Попробуйте позже.")
+        else:
+            await event_edit_func(f"❌ **Ошибка:** {ex}")
         logger.error(f"Download error: {ex}")
         return None
     finally:
@@ -1710,6 +1707,8 @@ async def playlist_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
+        if os.path.exists('cookies.txt'):
+            ydl_opts['cookiefile'] = 'cookies.txt'
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
@@ -1807,6 +1806,8 @@ async def sub_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
+        if os.path.exists('cookies.txt'):
+            ydl_opts['cookiefile'] = 'cookies.txt'
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
