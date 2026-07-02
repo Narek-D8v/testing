@@ -191,6 +191,30 @@ def _detect_ffmpeg():
     return None
 
 
+def _find_cookies():
+    paths = [
+        os.path.join(os.path.dirname(__file__), 'cookies.txt'),
+        os.path.join(os.getcwd(), 'cookies.txt'),
+        'cookies.txt',
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            size = os.path.getsize(p)
+            print(f"[cookies] found: {p} ({size} bytes)")
+            try:
+                with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                    head = f.read(200)
+                if 'youtube.com' not in head and 'youtu.be' not in head:
+                    print(f"[cookies] WARNING: no youtube.com in cookies file")
+                if not head.startswith('#') and '{' in head[:50]:
+                    print(f"[cookies] WARNING: looks like JSON, need Netscape format!")
+            except Exception as e:
+                print(f"[cookies] read error: {e}")
+            return p
+    print(f"[cookies] NOT FOUND in any path: {paths}")
+    return None
+
+
 async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
     global is_downloading
     if is_downloading:
@@ -242,12 +266,9 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
         if 'bestvideo+' in str(ydl_opts.get('format', '')):
             ydl_opts['merge_output_format'] = 'mp4'
-        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
-        if os.path.exists(cookies_path):
+        cookies_path = _find_cookies()
+        if cookies_path:
             ydl_opts['cookiefile'] = cookies_path
-            print(f"[cookies] using {cookies_path}")
-        else:
-            print(f"[cookies] {cookies_path} not found")
 
         def _dl():
             print("[_dl] creating YoutubeDL...")
@@ -276,7 +297,11 @@ async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
         import traceback
         traceback.print_exc()
         if "Sign in" in err_str or "confirm" in err_str.lower():
-            await event_edit_func("⚠ YouTube требует авторизации. Загрузите cookies.txt в корень бота.\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
+            cp = _find_cookies()
+            if cp:
+                await event_edit_func(f"⚠ YouTube требует авторизации. cookies.txt найден ({cp}), но файл может быть в JSON-формате или куки устарели.\nЭкспортируйте куки в формате **Netscape** (не JSON) через расширение 'Get cookies.txt' или 'cookies.txt'.\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
+            else:
+                await event_edit_func(f"⚠ YouTube требует авторизации. Файл cookies.txt не найден.\nПроверенные пути:\n• {os.path.join(os.path.dirname(__file__), 'cookies.txt')}\n• {os.path.join(os.getcwd(), 'cookies.txt')}\n• cookies.txt\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
         elif "HTTP Error 429" in err_str:
             await event_edit_func("⚠ Слишком много запросов к YouTube. Попробуйте позже.")
         else:
@@ -1740,8 +1765,8 @@ async def playlist_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
-        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
-        if os.path.exists(cookies_path):
+        cookies_path = _find_cookies()
+        if cookies_path:
             ydl_opts['cookiefile'] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -1840,8 +1865,8 @@ async def sub_cmd(e):
             'quiet': True,
             'no_warnings': True,
         }
-        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
-        if os.path.exists(cookies_path):
+        cookies_path = _find_cookies()
+        if cookies_path:
             ydl_opts['cookiefile'] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
