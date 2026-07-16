@@ -1,35 +1,40 @@
-import os
-import logging
-import datetime
 import asyncio
+import base64
+import datetime
+import hashlib
+import json
+import logging
+import math
+import os
 import random
 import re
-import math
-import time
-import hashlib
-import base64
 import string
+import time
 import uuid
-
-import subprocess
-import shutil
-
-import aiohttp
-import yt_dlp
 from collections import defaultdict
-
-from telethon import TelegramClient, events
-from telethon.tl.types import (
-    InputMediaDice, ChannelParticipantsAdmins, ChannelParticipantsBots,
-    ReactionEmoji
-)
-from telethon.tl.functions.messages import SendReactionRequest
-from telethon.tl.functions.account import UpdateProfileRequest, UpdateStatusRequest, GetAuthorizationsRequest
-from flask import Flask
 from threading import Thread
 
+import aiohttp
+import requests
+from flask import Flask
+from instaloader import Instaloader, Post
+from pytubefix import Playlist, YouTube
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+from telethon.tl.functions.account import (
+    GetAuthorizationsRequest, UpdateProfileRequest, UpdateStatusRequest,
+)
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import (
+    ChannelParticipantsAdmins, ChannelParticipantsBots, InputMediaDice,
+    ReactionEmoji,
+)
+
+from rp_commands import (
+    RP_COMMANDS, format_rp_action, get_all_categories,
+    get_category_commands, get_rp_reply,
+)
 from storage import Storage
-from rp_commands import RP_COMMANDS, get_rp_reply, format_rp_action, get_all_categories, get_category_commands
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,6 +44,9 @@ API_ID = os.environ.get('API_ID')
 API_HASH = os.environ.get('API_HASH')
 PORT = int(os.environ.get('PORT', 8080))
 STRING_SESSION = os.environ.get('STRING_SESSION')
+OWNER_ID = int(os.environ.get('OWNER_ID', '5457847440'))
+HIBP_API_KEY = os.environ.get('HIBP_API_KEY', '')
+MEDIA_DIR = os.environ.get('MEDIA_DIR', './media')
 
 db = Storage()
 
@@ -85,6 +93,13 @@ class BotState:
         self.shadow_delay = int(db.get_state('shadow_delay', '5'))
         self.lock_enabled = db.get_state('lock_enabled', 'False') == 'True'
         self.mute_enabled = db.get_state('mute_enabled', 'False') == 'True'
+        self.typing_enabled = db.get_state('typing_enabled', 'False') == 'True'
+        self.autodel_enabled = db.get_state('autodel_enabled', 'False') == 'True'
+        self.autodel_delay = int(db.get_state('autodel_delay', '10'))
+        self.reply_delay = int(db.get_state('reply_delay', '0'))
+        self.readreceipt_enabled = db.get_state('readreceipt_enabled', 'True') == 'True'
+        raw_sudo = db.get_state('sudo_users', '')
+        self.sudo_users = set(int(x) for x in raw_sudo.split(',') if x.strip())
 
     def _save(self):
         db.set_state('auto_reply_enabled', str(self.auto_reply_enabled))
@@ -99,6 +114,12 @@ class BotState:
         db.set_state('shadow_delay', str(self.shadow_delay))
         db.set_state('lock_enabled', str(self.lock_enabled))
         db.set_state('mute_enabled', str(self.mute_enabled))
+        db.set_state('typing_enabled', str(self.typing_enabled))
+        db.set_state('autodel_enabled', str(self.autodel_enabled))
+        db.set_state('autodel_delay', str(self.autodel_delay))
+        db.set_state('reply_delay', str(self.reply_delay))
+        db.set_state('readreceipt_enabled', str(self.readreceipt_enabled))
+        db.set_state('sudo_users', ','.join(str(x) for x in self.sudo_users))
 
     def toggle_auto_reply(self, state=None):
         if state is None:
@@ -157,6 +178,35 @@ class BotState:
         self.mute_enabled = value
         self._save()
 
+    def set_typing(self, value):
+        self.typing_enabled = value
+        self._save()
+
+    def set_autodel(self, value, delay=10):
+        self.autodel_enabled = value
+        self.autodel_delay = delay
+        self._save()
+
+    def set_reply_delay(self, seconds):
+        self.reply_delay = max(0, seconds)
+        self._save()
+
+    def set_readreceipt(self, value):
+        self.readreceipt_enabled = value
+        self._save()
+
+    def add_sudo(self, uid):
+        self.sudo_users.add(uid)
+        self._save()
+
+    def remove_sudo(self, uid):
+        self.sudo_users.discard(uid)
+        self._save()
+
+    def clear_sudo(self):
+        self.sudo_users.clear()
+        self._save()
+
     def reset_stealth(self):
         self.cover_enabled = False
         self.silent_enabled = False
@@ -164,14 +214,24 @@ class BotState:
         self.shadow_delay = 5
         self.lock_enabled = False
         self.mute_enabled = False
+        self.typing_enabled = False
+        self.autodel_enabled = False
+        self.autodel_delay = 10
+        self.reply_delay = 0
+        self.readreceipt_enabled = True
         self._save()
 
 state = BotState()
 command_cooldown = defaultdict(float)
-reply_cooldown = defaultdict(float)
-is_downloading = False
+reply_cooldown = {}
+MAX_COOLDOWN_ENTRIES = 500
+_download_lock = asyncio.Lock()
 _watch_task = None
 _protect_task = None
+
+
+def owner_filter(event):
+    return event.sender_id == OWNER_ID or event.sender_id in state.sudo_users
 
 
 def format_bytes(n):
@@ -182,173 +242,150 @@ def format_bytes(n):
     return f"{n:.1f} ТБ"
 
 
-def _detect_ffmpeg():
-    path = shutil.which('ffmpeg')
-    if path:
-        return os.path.dirname(path)
-    if os.path.exists('/usr/bin/ffmpeg'):
-        return '/usr/bin'
-    return None
-
-
-def _find_cookies():
-    paths = [
-        os.path.join(os.path.dirname(__file__), 'cookies.txt'),
-        os.path.join(os.getcwd(), 'cookies.txt'),
-        'cookies.txt',
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            size = os.path.getsize(p)
-            print(f"[cookies] found: {p} ({size} bytes)")
-            try:
-                with open(p, 'r', encoding='utf-8', errors='ignore') as f:
-                    head = f.read(200)
-                if 'youtube.com' not in head and 'youtu.be' not in head:
-                    print(f"[cookies] WARNING: no youtube.com in cookies file")
-                if not head.startswith('#') and '{' in head[:50]:
-                    print(f"[cookies] WARNING: looks like JSON, need Netscape format!")
-            except Exception as e:
-                print(f"[cookies] read error: {e}")
-            return p
-    print(f"[cookies] NOT FOUND in any path: {paths}")
-    return None
-
-
-async def _run_download(event_edit_func, url, ydl_opts, timeout=600):
-    global is_downloading
-    if is_downloading:
-        await event_edit_func("⏳ Уже идёт другая загрузка. Подождите.")
-        return None
-    is_downloading = True
-    print(f"[_run_download] Starting: {url}")
-    try:
-        last_progress_update = 0
-
-        def hook(d):
-            nonlocal last_progress_update
-            status = d['status']
-            print(f"[hook] status={status}")
-            if status == 'downloading':
-                now = time.time()
-                if now - last_progress_update < 3:
-                    return
-                last_progress_update = now
-                total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
-                down = d.get('downloaded_bytes', 0)
-                speed = d.get('speed', 0)
-                pct = (down / total * 100) if total > 0 else 0
-                eta = d.get('eta', 0)
-                pct_str = f"{pct:.0f}%"
-                speed_str = f"{speed / 1024 / 1024:.1f} MB/s" if speed else "N/A"
-                eta_str = fmt_time(eta) if eta else "N/A"
-                text = f"📥 **Скачивание...** {pct_str}\n⬇ {speed_str} | ⏱ ~{eta_str}"
-                print(f"[progress] {pct_str} {speed_str} ETA {eta_str}")
-                logger.info(f"Download progress: {pct_str} {speed_str} ETA {eta_str}")
-                try:
-                    client.loop.create_task(event_edit_func(text))
-                except Exception as e:
-                    print(f"[hook] create_task error: {e}")
-                    pass
-            elif status == 'finished':
-                fn = d.get('filename', '')
-                print(f"[hook] finished: {fn}")
-                logger.info(f"Download finished: {fn}")
-
-        ydl_opts['progress_hooks'] = [hook]
-        ydl_opts['quiet'] = True
-        ydl_opts['no_warnings'] = True
-        ydl_opts['noplaylist'] = True
-        ydl_opts['nocheckcertificate'] = True
-        ydl_opts['cachedir'] = False
-        if 'youtube' in url.lower() or 'youtu.be' in url.lower():
-            ydl_opts['extractor_args'] = {
-                'youtube': {
-                    'player_client': ['android', 'web', 'ios'],
-                }
-            }
-        ydl_opts['socket_timeout'] = 30
-        ydl_opts['retries'] = 10
-        ydl_opts['fragment_retries'] = 10
-        ffmpeg_dir = _detect_ffmpeg()
-        if ffmpeg_dir:
-            ydl_opts['ffmpeg_location'] = ffmpeg_dir
-            print(f"[ffmpeg] found at {ffmpeg_dir}")
+async def _download_yt_video(url, quality=None):
+    def _dl():
+        yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+        if quality:
+            stream = yt.streams.filter(res=f"{quality}p").first()
+            if not stream:
+                stream = yt.streams.get_highest_resolution()
         else:
-            print(f"[ffmpeg] not found, DASH may fall back to best")
-        if 'bestvideo+' in str(ydl_opts.get('format', '')):
-            ydl_opts['merge_output_format'] = 'mp4'
-            ydl_opts['postprocessor_args'] = ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']
-        cookies_path = _find_cookies()
-        if cookies_path:
-            ydl_opts['cookiefile'] = cookies_path
+            stream = yt.streams.get_highest_resolution()
+        return stream.download(output_path=MEDIA_DIR)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _dl)
 
-        def _dl():
-            print("[_dl] creating YoutubeDL...")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print("[_dl] extract_info...")
-                info = ydl.extract_info(url, download=True)
-                fn = ydl.prepare_filename(info)
-                print(f"[_dl] done, filename={fn}")
-                return fn
 
-        loop = asyncio.get_event_loop()
-        task = loop.run_in_executor(None, _dl)
-        print("[_run_download] waiting for task...")
-        filename = await asyncio.wait_for(task, timeout=timeout)
-        if filename and os.path.exists(filename):
-            print(f"[_run_download] file saved: {filename} ({os.path.getsize(filename)} bytes)")
-        return filename
-    except asyncio.TimeoutError:
-        print(f"[_run_download] TIMEOUT after {timeout}s: {url}")
-        await event_edit_func("❌ Превышено время ожидания (10 мин).")
-        logger.warning(f"Download timeout for {url}")
+async def _download_yt_audio(url):
+    def _dl():
+        yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+        stream = yt.streams.get_audio_only()
+        return stream.download(output_path=MEDIA_DIR)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _dl)
+
+
+async def _download_instagram_video(url):
+    shortcode_match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
+    if not shortcode_match:
+        raise ValueError("Неверная ссылка Instagram")
+    shortcode = shortcode_match.group(1)
+
+    def _dl():
+        loader = Instaloader(
+            download_videos=True, download_video_thumbnails=False,
+            download_geotags=False, download_comments=False,
+            save_metadata=False, compress_json=False,
+        )
+        post = Post.from_shortcode(loader.context, shortcode)
+        loader.download_post(post, target=os.path.join(MEDIA_DIR, shortcode))
+        folder = os.path.join(MEDIA_DIR, shortcode)
+        for f in os.listdir(folder):
+            if f.endswith('.mp4'):
+                src = os.path.join(folder, f)
+                dst = os.path.join(MEDIA_DIR, f)
+                os.rename(src, dst)
+                os.rmdir(folder)
+                return dst
         return None
-    except Exception as ex:
-        err_str = str(ex)
-        print(f"[_run_download] ERROR: {err_str}")
-        import traceback
-        traceback.print_exc()
-        if "format not available" in err_str.lower() and 'bestvideo+' in str(ydl_opts.get('format', '')):
-            print("[_dl] retrying with format='best'...")
-            await event_edit_func("⚠️ DASH-формат недоступен, пробую best...")
-            ydl_opts['format'] = 'best'
-            ydl_opts.pop('merge_output_format', None)
-            ydl_opts.pop('postprocessor_args', None)
-            try:
-                def _dl_retry():
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                        return ydl.prepare_filename(info)
-                loop = asyncio.get_event_loop()
-                task = loop.run_in_executor(None, _dl_retry)
-                filename = await asyncio.wait_for(task, timeout=timeout)
-                if filename and os.path.exists(filename):
-                    print(f"[_run_download] retry OK: {filename}")
-                return filename
-            except Exception as ex2:
-                print(f"[_dl] retry also failed: {ex2}")
-                await event_edit_func(f"❌ **Ошибка:** {ex2}")
-                logger.error(f"Download retry error: {ex2}")
-                return None
-        if "Sign in" in err_str or "confirm" in err_str.lower():
-            is_youtube = 'youtube' in url.lower() or 'youtu.be' in url.lower()
-            cp = _find_cookies()
-            if cp:
-                msg = f"⚠ Сайт требует авторизации. cookies.txt найден ({cp}), но запрос всё равно блокируется.\nПопробуйте обновить cookies или сменить хостинг."
-                if is_youtube:
-                    msg += "\nДобавлены обходы: player_client=android, skip=hls/dash/js, retries=10."
-                await event_edit_func(msg)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _dl)
+
+
+async def _download_tiktok_video(url):
+    def _dl():
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        html = resp.text
+
+        video_url = None
+        patterns = [
+            r'"downloadAddr":"([^"]+)"',
+            r'"playAddr":"([^"]+)"',
+            r'"play":"([^"]+)"',
+            r'<video[^>]+src="([^"]+)"',
+            r'"url_list":\["([^"]+)"\]',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                video_url = match.group(1).replace('\\/', '/')
+                if video_url.startswith('//'):
+                    video_url = 'https:' + video_url
+                break
+
+        if not video_url:
+            match = re.search(r'"video":{"videoUrl":{"urlList":\["([^"]+)"', html)
+            if match:
+                video_url = match.group(1).replace('\\/', '/')
+
+        if video_url:
+            vr = requests.get(video_url, headers=headers, timeout=30)
+            if vr.status_code == 200:
+                path = os.path.join(MEDIA_DIR, f'tiktok_{int(time.time())}.mp4')
+                with open(path, 'wb') as f:
+                    f.write(vr.content)
+                return path
+        return None
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _dl)
+
+
+async def _run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
+    if _download_lock.locked():
+        await event_edit_func("⏳ Уже идёт загрузка, встаю в очередь...")
+    async with _download_lock:
+        logger.info(f"[download] Starting: {url} (mode={mode})")
+        try:
+            is_instagram = 'instagram.com' in url.lower()
+            is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
+            is_tiktok = 'tiktok.com' in url.lower()
+
+            if is_tiktok:
+                await event_edit_func("📥 Скачиваю из TikTok...")
+                filename = await asyncio.wait_for(
+                    _download_tiktok_video(url), timeout=timeout
+                )
+            elif is_instagram:
+                await event_edit_func("📥 Скачиваю из Instagram...")
+                filename = await asyncio.wait_for(
+                    _download_instagram_video(url), timeout=timeout
+                )
+            elif is_youtube:
+                if mode == 'audio':
+                    await event_edit_func("🎵 Скачиваю аудио...")
+                    filename = await asyncio.wait_for(
+                        _download_yt_audio(url), timeout=timeout
+                    )
+                else:
+                    qual = f"{quality}p" if quality else None
+                    await event_edit_func(f"📥 Скачиваю видео ({qual or 'авто'})...")
+                    filename = await asyncio.wait_for(
+                        _download_yt_video(url, quality), timeout=timeout
+                    )
             else:
-                await event_edit_func(f"⚠ Сайт требует авторизации. Файл cookies.txt не найден.\nПроверенные пути:\n• {os.path.join(os.path.dirname(__file__), 'cookies.txt')}\n• {os.path.join(os.getcwd(), 'cookies.txt')}\n• cookies.txt\nИнструкция: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp")
-        elif "HTTP Error 429" in err_str:
-            await event_edit_func("⚠ Слишком много запросов. Попробуйте позже.")
-        else:
+                await event_edit_func("❌ Поддерживаются: YouTube, Instagram, TikTok.")
+                return None
+
+            if filename and os.path.exists(filename):
+                size = format_bytes(os.path.getsize(filename))
+                logger.info(f"[download] OK: {filename} ({size})")
+                return filename
+            logger.warning(f"[download] file not found after download: {url}")
+            return None
+        except asyncio.TimeoutError:
+            await event_edit_func("❌ Превышено время ожидания (10 мин).")
+            logger.warning(f"Download timeout: {url}")
+            return None
+        except Exception as ex:
+            logger.error(f"Download error: {ex}", exc_info=True)
             await event_edit_func(f"❌ **Ошибка:** {ex}")
-        logger.error(f"Download error: {ex}")
-        return None
-    finally:
-        is_downloading = False
+            return None
 
 
 async def _send_and_clean(event_edit_func, chat_id, filepath, caption=''):
@@ -357,32 +394,12 @@ async def _send_and_clean(event_edit_func, chat_id, filepath, caption=''):
     size_mb = os.path.getsize(filepath) / 1024 / 1024
     if size_mb > 1500:
         await event_edit_func("❌ Слишком большой файл (>1.5 ГБ).")
+    else:
+        await event_edit_func("📤 **Отправляю файл...**")
         try:
-            os.remove(filepath)
-        except Exception:
-            pass
-        return
-    if size_mb > 50:
-        ffmpeg_dir = _detect_ffmpeg()
-        if not ffmpeg_dir:
-            await event_edit_func(f"⚠️ Файл {format_bytes(os.path.getsize(filepath))} (ffmpeg не найден, сжатие недоступно).")
-        else:
-            await event_edit_func(f"⚠️ Файл {format_bytes(os.path.getsize(filepath))}, сжимаю...")
-            compressed = filepath.rsplit('.', 1)[0] + '_compressed.' + filepath.rsplit('.', 1)[-1]
-            try:
-                subprocess.run([
-                    os.path.join(ffmpeg_dir, 'ffmpeg'), '-i', filepath, '-vf', 'scale=min(854,iw):min(480,ih)',
-                    '-c:v', 'libx264', '-crf', '28', '-c:a', 'aac', '-y', compressed
-                ], capture_output=True, timeout=120)
-                os.remove(filepath)
-                filepath = compressed
-            except Exception:
-                await event_edit_func("⚠️ Не удалось сжать, отправляю как есть.")
-    await event_edit_func("📤 **Отправляю файл...**")
-    try:
-        await client.send_file(chat_id, filepath, caption=caption)
-    except Exception as ex:
-        await event_edit_func(f"❌ Ошибка отправки: {ex}")
+            await client.send_file(chat_id, filepath, caption=caption)
+        except Exception as ex:
+            await event_edit_func(f"❌ Ошибка отправки: {ex}")
     await asyncio.sleep(5)
     try:
         os.remove(filepath)
@@ -406,21 +423,21 @@ def home():
 def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
-@client.on(events.NewMessage(pattern=r'!sleep$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!sleep$', func=owner_filter))
 async def sleep_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(True)
     await e.edit('💤 Автоответчик **ВКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!wake$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!wake$', func=owner_filter))
 async def wake_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(False)
     await e.edit('☀️ Автоответчик **ВЫКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!setreply(?:\s+(@\w+))?(?:\s+(.+))?', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!setreply(?:\s+(@\w+))?(?:\s+(.+))?', func=owner_filter))
 async def setreply_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -438,7 +455,7 @@ async def setreply_cmd(e):
         await e.edit("ℹ️ `!setreply @username текст` или `!setreply default текст`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!status$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!status$', func=owner_filter))
 async def status_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -456,13 +473,18 @@ async def status_cmd(e):
         f"👤 Shadow: {'✅' if state.shadow_enabled else '❌'}\n"
         f"🔒 Lock: {'✅' if state.lock_enabled else '❌'}\n"
         f"🔇 Mute: {'✅' if state.mute_enabled else '❌'}\n"
+        f"⌨️ Тайпинг: {'✅' if state.typing_enabled else '❌'}\n"
+        f"🗑️ Автоудал: {'✅' if state.autodel_enabled else '❌'}\n"
+        f"⏳ Задержка: `{state.reply_delay}с`\n"
+        f"👁️ Прочтение: {'✅' if state.readreceipt_enabled else '❌'}\n"
         f"😴 AFK: {afk_status}\n"
+        f"👑 Sudo: `{len(state.sudo_users)}`\n"
         f"⏱ Аптайм: `{state.uptime}`\n"
         f"📨 Команд выполнено: `{s.get('cmds', 0)}`"
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!time$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!time$', func=owner_filter))
 async def time_cmd(e):
     if check_cover(e): return
     now = datetime.datetime.now()
@@ -477,7 +499,7 @@ async def time_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!ping$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!ping$', func=owner_filter))
 async def ping_cmd(e):
     if check_cover(e): return
     t0 = time.monotonic()
@@ -487,7 +509,7 @@ async def ping_cmd(e):
     await e.edit(f"🏓 **Понг!**\n⚡ Задержка: `{ms:.1f} мс`\n📶 Качество: {q}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!id$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!id$', func=owner_filter))
 async def id_cmd(e):
     if check_cover(e): return
     chat = await e.get_chat()
@@ -506,7 +528,7 @@ async def id_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!info$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!info$', func=owner_filter))
 async def info_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -523,7 +545,7 @@ async def info_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!restart$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!restart$', func=owner_filter))
 async def restart_cmd(e):
     if check_cover(e): return
     await e.edit('🔄 Перезагрузка...')
@@ -531,7 +553,7 @@ async def restart_cmd(e):
     await client.disconnect()
     os._exit(0)
 
-@client.on(events.NewMessage(pattern=r'!ghost$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!ghost$', func=owner_filter))
 async def ghost_cmd(e):
     if check_cover(e): return
     state.toggle_ghost()
@@ -543,7 +565,7 @@ async def ghost_cmd(e):
         await e.edit("👁 **Ghost-режим ВЫКЛЮЧЕН**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!cover(?:\s+(off|on))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!cover(?:\s+(off|on))?$', func=owner_filter))
 async def cover_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -554,7 +576,7 @@ async def cover_cmd(e):
         await e.edit("🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `!cover off`, игнорируются.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!silent\s*(on|off)?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!silent\s*(on|off)?$', func=owner_filter))
 async def silent_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -565,7 +587,7 @@ async def silent_cmd(e):
         await e.edit("🔇 **Silent-режим ВКЛЮЧЁН** — бот молчит в ЛС.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!shadow(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!shadow(?:\s+(\d+))?$', func=owner_filter))
 async def shadow_cmd(e):
     delay = e.pattern_match.group(1)
     if delay:
@@ -580,7 +602,7 @@ async def shadow_cmd(e):
         await e.edit("👤 **Shadow-режим ВКЛЮЧЁН** — удаление через 5 сек.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!lock(?:\s+(on|off))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!lock(?:\s+(on|off))?$', func=owner_filter))
 async def lock_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -591,7 +613,7 @@ async def lock_cmd(e):
         await e.edit("🔒 **Lock-режим ВКЛЮЧЁН** — бот отвечает только контактам.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!mute(?:\s+(on|off))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!mute(?:\s+(on|off))?$', func=owner_filter))
 async def mute_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
@@ -602,7 +624,96 @@ async def mute_cmd(e):
         await e.edit("🔇 **Mute-режим ВКЛЮЧЁН** — все ЛС игнорируются.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!online$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!typing(?:\s+(on|off))?$', func=owner_filter))
+async def typing_cmd(e):
+    if check_cover(e): return
+    arg = e.pattern_match.group(1)
+    if arg == 'off':
+        state.set_typing(False)
+        await e.edit("⌨️ **Тайпинг ВЫКЛЮЧЕН** — индикатор печати не показывается.")
+    else:
+        state.set_typing(True)
+        await e.edit("⌨️ **Тайпинг ВКЛЮЧЁН** — перед ответом показывается «печатает...».")
+    db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!autodel(?:\s+(on|off))?(?:\s+(\d+))?$', func=owner_filter))
+async def autodel_cmd(e):
+    if check_cover(e): return
+    arg = e.pattern_match.group(1)
+    delay_str = e.pattern_match.group(2)
+    if arg == 'off':
+        state.set_autodel(False)
+        await e.edit("🗑️ **Автоудаление ВЫКЛЮЧЕНО** — сообщения не удаляются.")
+    else:
+        d = int(delay_str) if delay_str else 10
+        state.set_autodel(True, max(3, d))
+        await e.edit(f"🗑️ **Автоудаление ВКЛЮЧЕНО** — удаление через {max(3, d)} сек.")
+    db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!delay\s+(\d+)', func=owner_filter))
+async def delay_cmd(e):
+    if check_cover(e): return
+    sec = int(e.pattern_match.group(1))
+    state.set_reply_delay(min(sec, 30))
+    if state.reply_delay > 0:
+        await e.edit(f"⏳ **Задержка ответа: {state.reply_delay} сек.**")
+    else:
+        await e.edit("⏳ **Задержка ответа ВЫКЛЮЧЕНА.**")
+    db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!readreceipt(?:\s+(on|off))?$', func=owner_filter))
+async def readreceipt_cmd(e):
+    if check_cover(e): return
+    arg = e.pattern_match.group(1)
+    if arg == 'off':
+        state.set_readreceipt(False)
+        await e.edit("👁️ **Прочтение ВЫКЛЮЧЕНО** — сообщения остаются непрочитанными.")
+    else:
+        state.set_readreceipt(True)
+        await e.edit("👁️ **Прочтение ВКЛЮЧЕНО** — сообщения отмечаются прочитанными.")
+    db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!sudo(?:\s+(on|off)\s+(\S+))?$', func=owner_filter))
+async def sudo_cmd(e):
+    if check_cover(e): return
+    g = e.pattern_match
+    action = g.group(1)
+    target = g.group(2)
+    if not action:
+        if state.sudo_users:
+            lines = ["👑 **Sudo-пользователи:**\n"]
+            for uid in state.sudo_users:
+                try:
+                    ent = await client.get_entity(uid)
+                    name = getattr(ent, 'first_name', '') or str(uid)
+                    uname = f" @{ent.username}" if getattr(ent, 'username', None) else ''
+                    lines.append(f"• {name}{uname} (`{uid}`)")
+                except Exception:
+                    lines.append(f"• `{uid}`")
+            await e.edit("\n".join(lines))
+        else:
+            await e.edit("👑 **Sudo-пользователи отсутствуют.**")
+        db.bump_stat('cmds')
+        return
+    if action == 'on':
+        try:
+            ent = await client.get_entity(target.lstrip('@'))
+            state.add_sudo(ent.id)
+            name = getattr(ent, 'first_name', '') or str(ent.id)
+            await e.edit(f"👑 **{name}** добавлен в sudo.")
+        except Exception as ex:
+            await e.edit(f"❌ Пользователь {target} не найден: {ex}")
+    else:
+        try:
+            ent = await client.get_entity(target.lstrip('@'))
+            state.remove_sudo(ent.id)
+            name = getattr(ent, 'first_name', '') or str(ent.id)
+            await e.edit(f"👑 **{name}** удалён из sudo.")
+        except Exception as ex:
+            await e.edit(f"❌ Пользователь {target} не найден: {ex}")
+    db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!online$', func=owner_filter))
 async def online_cmd(e):
     if check_cover(e): return
     try:
@@ -612,7 +723,7 @@ async def online_cmd(e):
         await e.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!offline$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!offline$', func=owner_filter))
 async def offline_cmd(e):
     if check_cover(e): return
     try:
@@ -622,13 +733,13 @@ async def offline_cmd(e):
         await e.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!status_reset$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!status_reset$', func=owner_filter))
 async def status_reset_cmd(e):
     state.reset_stealth()
     await e.edit("🔄 **Все стелс-режимы сброшены**: cover, silent, shadow, lock, mute — выключены.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!me$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!me$', func=owner_filter))
 async def me_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
@@ -645,7 +756,7 @@ async def me_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!avatar$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!avatar$', func=owner_filter))
 async def avatar_cmd(e):
     if check_cover(e): return
     if e.reply_to_msg_id:
@@ -661,7 +772,7 @@ async def avatar_cmd(e):
         await e.edit("❌ Аватарка не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!name (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!name (.+)', func=owner_filter))
 async def name_cmd(e):
     if check_cover(e): return
     n = e.pattern_match.group(1).strip()
@@ -669,7 +780,7 @@ async def name_cmd(e):
     await e.edit(f"✅ Имя → **{n}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!lastname(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!lastname(?:\s+(.+))?$', func=owner_filter))
 async def lastname_cmd(e):
     if check_cover(e): return
     n = (e.pattern_match.group(1) or '').strip()
@@ -677,7 +788,7 @@ async def lastname_cmd(e):
     await e.edit(f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!bio(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!bio(?:\s+(.+))?$', func=owner_filter))
 async def bio_cmd(e):
     if check_cover(e): return
     t = (e.pattern_match.group(1) or '').strip()
@@ -685,7 +796,7 @@ async def bio_cmd(e):
     await e.edit(f"✅ Био → _{t}_" if t else "✅ Био очищено")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!whois (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!whois (.+)', func=owner_filter))
 async def whois_cmd(e):
     if check_cover(e): return
     target = e.pattern_match.group(1).strip().lstrip('@')
@@ -708,7 +819,7 @@ async def whois_cmd(e):
         await e.edit(f"❌ Не найден: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!username_check (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!username_check (.+)', func=owner_filter))
 async def username_check_cmd(e):
     if check_cover(e): return
     uname = e.pattern_match.group(1).strip().lstrip('@')
@@ -720,49 +831,49 @@ async def username_check_cmd(e):
         await e.edit(f"🔍 @{uname}\n✅ **Свободен**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!dice$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!dice$', func=owner_filter))
 async def dice_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎲'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!dart$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!dart$', func=owner_filter))
 async def dart_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎯'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!basket$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!basket$', func=owner_filter))
 async def basket_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🏀'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!football$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!football$', func=owner_filter))
 async def football_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('⚽'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!bowling$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!bowling$', func=owner_filter))
 async def bowling_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎳'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!casino$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!casino$', func=owner_filter))
 async def casino_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎰'))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!coin$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!coin$', func=owner_filter))
 async def coin_cmd(e):
     if check_cover(e): return
     sides = ["Орёл 🦅", "Решка 💰"]
@@ -771,7 +882,7 @@ async def coin_cmd(e):
     await e.edit(f"🪙 Монета вращается {flips} раз...\n\nРезультат: **{r}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=owner_filter))
 async def rand_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -785,7 +896,7 @@ async def rand_cmd(e):
         await e.edit(f"🎲 **{random.randint(1, 100)}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!8ball(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!8ball(?:\s+(.+))?$', func=owner_filter))
 async def eightball_cmd(e):
     if check_cover(e): return
     ANSWERS = {
@@ -850,7 +961,7 @@ async def eightball_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!rps(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!rps(?:\s+(.+))?$', func=owner_filter))
 async def rps_cmd(e):
     if check_cover(e): return
     MAP = {'к': '🪨 Камень', 'камень': '🪨 Камень', 'н': '✂️ Ножницы', 'ножницы': '✂️ Ножницы', 'б': '📄 Бумага', 'бумага': '📄 Бумага'}
@@ -870,7 +981,7 @@ async def rps_cmd(e):
     await e.edit(f"✊✌️🖐 **КНБ**\n\n👤 Ты: {uc}\n🤖 Бот: {bc}\n\n{res}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!slot$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!slot$', func=owner_filter))
 async def slot_cmd(e):
     if check_cover(e): return
     SYM = ['🍒', '🍋', '🍊', '🍇', '🍉', '⭐', '💎', '7️⃣', '🔔', '🍀']
@@ -889,7 +1000,7 @@ async def slot_cmd(e):
     await msg.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]\n\n{res}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!lucky$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!lucky$', func=owner_filter))
 async def lucky_cmd(e):
     if check_cover(e): return
     pct = random.randint(0, 100)
@@ -906,7 +1017,7 @@ async def lucky_cmd(e):
     await e.edit(f"🔮 **Индекс удачи**\n\n[{bar}] **{pct}%**\n\n{msg}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!choose (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!choose (.+)', func=owner_filter))
 async def choose_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1)
@@ -919,7 +1030,7 @@ async def choose_cmd(e):
     await e.edit(f"🤔 **Выбираю из {len(opts)} вариантов...**\n\n{listed}\n\n✅ **Выбор: {winner}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!quiz$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!quiz$', func=owner_filter))
 async def quiz_cmd(e):
     if check_cover(e): return
     QUESTIONS = [
@@ -1015,7 +1126,7 @@ def vigenere(text, key, dec=False):
             out.append(c)
     return ''.join(out)
 
-@client.on(events.NewMessage(pattern=r'!calc (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!calc (.+)', func=owner_filter))
 async def calc_cmd(e):
     if check_cover(e): return
     expr = e.pattern_match.group(1).strip()
@@ -1033,7 +1144,7 @@ async def send_reminder(chat_id, msg_text, delay):
     except Exception as e:
         logger.error(f"Ошибка напоминания: {e}")
 
-@client.on(events.NewMessage(pattern=r'!remind (\d+)\s+(.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!remind (\d+)\s+(.+)', func=owner_filter))
 async def remind_cmd(e):
     if check_cover(e): return
     delay = int(e.pattern_match.group(1))
@@ -1042,7 +1153,7 @@ async def remind_cmd(e):
     asyncio.create_task(send_reminder(e.chat_id, text, delay))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!search (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!search (.+)', func=owner_filter))
 async def search_cmd(e):
     if check_cover(e): return
     q = e.pattern_match.group(1).strip()
@@ -1056,7 +1167,7 @@ async def search_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!shorten (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!shorten (.+)', func=owner_filter))
 async def shorten_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
@@ -1074,7 +1185,7 @@ async def shorten_cmd(e):
         await e.edit("❌ Ошибка. Проверь URL.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!weather (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!weather (.+)', func=owner_filter))
 async def weather_cmd(e):
     if check_cover(e): return
     city = e.pattern_match.group(1).strip()
@@ -1087,7 +1198,7 @@ async def weather_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!translate (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!translate (.+)', func=owner_filter))
 async def translate_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
@@ -1100,7 +1211,7 @@ async def translate_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)', func=owner_filter))
 async def base64_cmd(e):
     if check_cover(e): return
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
@@ -1111,11 +1222,12 @@ async def base64_cmd(e):
         else:
             res = base64.b64decode(text.encode()).decode()
             await e.edit(f"🔓 **Base64 decode:**\n`{res}`")
-    except Exception:
+    except Exception as ex:
+        logger.error(f"base64 error: {ex}")
         await e.edit("❌ Ошибка. Проверь данные.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!hash (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!hash (.+)', func=owner_filter))
 async def hash_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().encode()
@@ -1128,14 +1240,14 @@ async def hash_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!morse (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!morse (.+)', func=owner_filter))
 async def morse_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
     await e.edit(f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', func=owner_filter))
 async def caesar_cmd(e):
     if check_cover(e): return
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
@@ -1143,7 +1255,7 @@ async def caesar_cmd(e):
     await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', func=owner_filter))
 async def vigenere_cmd(e):
     if check_cover(e): return
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
@@ -1151,7 +1263,7 @@ async def vigenere_cmd(e):
     await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!password(?:\s+(\d+))?(?:\s+(simple))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!password(?:\s+(\d+))?(?:\s+(simple))?$', func=owner_filter))
 async def password_cmd(e):
     if check_cover(e): return
     length = max(4, min(int(e.pattern_match.group(1) or 16), 128))
@@ -1161,7 +1273,7 @@ async def password_cmd(e):
     await e.edit(f"🔑 **Пароль ({length} симв.)**\n\n`{pwd}`\n\nСила: {s}\nСимволы: {'✅' if sym else '❌'}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!qr (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!qr (.+)', func=owner_filter))
 async def qr_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().replace(' ', '+')
@@ -1171,7 +1283,7 @@ async def qr_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!uuid$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!uuid$', func=owner_filter))
 async def uuid_cmd(e):
     if check_cover(e): return
     ids = [str(uuid.uuid4()) for _ in range(5)]
@@ -1179,7 +1291,7 @@ async def uuid_cmd(e):
     await e.edit(f"🆔 **Случайные UUID v4:**\n\n{out}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=owner_filter))
 async def color_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1).strip()
@@ -1193,15 +1305,18 @@ async def color_cmd(e):
     rf, gf, bf = r / 255, g / 255, b / 255
     mx, mn = max(rf, gf, bf), min(rf, gf, bf)
     l_val = (mx + mn) / 2
-    s_val = 0 if mx == mn else (mx - mn) / (1 - abs(2 * l_val - 1))
     if mx == mn:
-        h_val = 0
-    elif mx == rf:
-        h_val = 60 * ((gf - bf) / (mx - mn) % 6)
-    elif mx == gf:
-        h_val = 60 * ((bf - rf) / (mx - mn) + 2)
+        s_val = 0.0
+        h_val = 0.0
     else:
-        h_val = 60 * ((rf - gf) / (mx - mn) + 4)
+        denom = 1 - abs(2 * l_val - 1)
+        s_val = 0 if denom == 0 else (mx - mn) / denom
+        if mx == rf:
+            h_val = 60 * ((gf - bf) / (mx - mn) % 6)
+        elif mx == gf:
+            h_val = 60 * ((bf - rf) / (mx - mn) + 2)
+        else:
+            h_val = 60 * ((rf - gf) / (mx - mn) + 4)
     await e.edit(
         f"🎨 **Цвет**\n\n"
         f"HEX: `{hex_val}`\n"
@@ -1211,7 +1326,7 @@ async def color_cmd(e):
     )
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!ascii (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!ascii (.+)', func=owner_filter))
 async def ascii_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
@@ -1220,7 +1335,7 @@ async def ascii_cmd(e):
     await e.edit(f"🔢 **ASCII коды:**\n_{text}_\n\n`{codes}`\n\nОбратно: `{back}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=owner_filter))
 async def type_cmd(e):
     if check_cover(e): return
     mode = e.pattern_match.group(1) or 'normal'
@@ -1273,42 +1388,42 @@ async def type_cmd(e):
         await msg.edit(text)
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!echo (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!echo (.+)', func=owner_filter))
 async def echo_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!say (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!say (.+)', func=owner_filter))
 async def say_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!bold (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!bold (.+)', func=owner_filter))
 async def bold_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"**{e.pattern_match.group(1).strip()}**")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!italic (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!italic (.+)', func=owner_filter))
 async def italic_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"__{e.pattern_match.group(1).strip()}__")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!mono (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!mono (.+)', func=owner_filter))
 async def mono_cmd(e):
     if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, f"`{e.pattern_match.group(1).strip()}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!clean(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!clean(?:\s+(\d+))?$', func=owner_filter))
 async def clean_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 10)
@@ -1325,7 +1440,7 @@ async def clean_cmd(e):
     await info.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!purge(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!purge(?:\s+(\d+))?$', func=owner_filter))
 async def purge_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 10)
@@ -1340,17 +1455,27 @@ async def purge_cmd(e):
     await info.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)', func=owner_filter))
 async def spam_cmd(e):
     if check_cover(e): return
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
+    MAX_SPAM = 50
+    if count < 1 or count > MAX_SPAM:
+        await e.edit(f"❌ Допустимо от 1 до {MAX_SPAM} сообщений.")
+        return
+    cooldown_key = f'spam_{e.chat_id}'
+    remaining = command_cooldown.get(cooldown_key, 0) - time.time()
+    if remaining > 0:
+        await e.edit(f"⏳ Подождите {int(remaining)} сек перед повторным спамом.")
+        return
+    command_cooldown[cooldown_key] = time.time() + 30
     await e.delete()
     for _ in range(count):
         await client.send_message(e.chat_id, text)
         await asyncio.sleep(0.35)
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!forward (-?\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!forward (-?\d+)', func=owner_filter))
 async def forward_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1364,7 +1489,7 @@ async def forward_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!pin$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!pin$', func=owner_filter))
 async def pin_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1374,7 +1499,7 @@ async def pin_cmd(e):
     await e.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!unpin$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!unpin$', func=owner_filter))
 async def unpin_cmd(e):
     if check_cover(e): return
     if e.reply_to_msg_id:
@@ -1384,7 +1509,7 @@ async def unpin_cmd(e):
     await e.delete()
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!copyall (\d+) (-?\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!copyall (\d+) (-?\d+)', func=owner_filter))
 async def copyall_cmd(e):
     if check_cover(e): return
     count, target = int(e.pattern_match.group(1)), int(e.pattern_match.group(2))
@@ -1404,7 +1529,7 @@ async def copyall_cmd(e):
     await e.edit(f"✅ Скопировано **{copied}/{count}** → `{target}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!react (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!react (.+)', func=owner_filter))
 async def react_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1422,7 +1547,7 @@ async def react_cmd(e):
         await e.edit(f"❌ Не удалось поставить реакцию: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'^!save$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'^!save$', func=owner_filter))
 async def save_media_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
@@ -1432,9 +1557,9 @@ async def save_media_cmd(e):
     if not replied.media:
         await e.edit("❌ В ответном сообщении нет медиа.")
         return
-    os.makedirs('./media', exist_ok=True)
+    os.makedirs(MEDIA_DIR, exist_ok=True)
     try:
-        path = await replied.download_media('./media/')
+        path = await replied.download_media(os.path.join(MEDIA_DIR, ''))
         name = os.path.basename(path) if path else 'unknown'
         db.set_saved(f'_media_{int(time.time())}', name)
         await e.edit(f"✅ **Сохранено:** `{name}`")
@@ -1444,7 +1569,7 @@ async def save_media_cmd(e):
         logger.error(f"Save media error: {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!save (\S+) (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!save (\S+) (.+)', func=owner_filter))
 async def save_cmd(e):
     if check_cover(e): return
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
@@ -1452,7 +1577,7 @@ async def save_cmd(e):
     await e.edit(f"✅ `{k}` = _{v}_")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!get (\S+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!get (\S+)', func=owner_filter))
 async def get_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1460,7 +1585,7 @@ async def get_cmd(e):
     await e.edit(f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!del (\S+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!del (\S+)', func=owner_filter))
 async def del_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1472,7 +1597,7 @@ async def del_cmd(e):
         await e.edit(f"❌ `{k}` не найден")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!list$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!list$', func=owner_filter))
 async def list_cmd(e):
     if check_cover(e): return
     d = db.all_saved()
@@ -1484,7 +1609,7 @@ async def list_cmd(e):
     await e.edit(f"📦 **Сохранено ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!find (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!find (.+)', func=owner_filter))
 async def find_cmd(e):
     if check_cover(e): return
     query = e.pattern_match.group(1).strip().lower()
@@ -1505,7 +1630,7 @@ async def find_cmd(e):
         await e.edit(f"🔍 **Результаты поиска: {query}**\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', func=owner_filter))
 async def note_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1520,7 +1645,7 @@ async def note_cmd(e):
     await e.edit(f"📝 Заметка сохранена: `{k}`")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!getnote (\S+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!getnote (\S+)', func=owner_filter))
 async def getnote_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1531,7 +1656,7 @@ async def getnote_cmd(e):
         await e.edit(f"❌ Заметка `{k}` не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!delnote (\S+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!delnote (\S+)', func=owner_filter))
 async def delnote_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
@@ -1543,7 +1668,7 @@ async def delnote_cmd(e):
         await e.edit(f"❌ `{k}` не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!notes$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!notes$', func=owner_filter))
 async def notes_cmd(e):
     if check_cover(e): return
     d = db.all_notes()
@@ -1555,7 +1680,7 @@ async def notes_cmd(e):
     await e.edit(f"📝 **Заметки ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!todo (.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!todo (.+)', func=owner_filter))
 async def todo_add_cmd(e):
     if check_cover(e): return
     task = e.pattern_match.group(1).strip()
@@ -1564,7 +1689,7 @@ async def todo_add_cmd(e):
     await e.edit(f"✅ Задача добавлена: _{task}_\n📋 Всего: {len(todos)}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!todos$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!todos$', func=owner_filter))
 async def todos_cmd(e):
     if check_cover(e): return
     todos = db.get_todos()
@@ -1580,7 +1705,7 @@ async def todos_cmd(e):
     await e.edit(f"📋 **Список задач** ({done}/{len(todos)} выполнено):\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!done (\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!done (\d+)', func=owner_filter))
 async def done_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1592,7 +1717,7 @@ async def done_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!undone (\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!undone (\d+)', func=owner_filter))
 async def undone_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1604,7 +1729,7 @@ async def undone_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!deltodo (\d+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!deltodo (\d+)', func=owner_filter))
 async def deltodo_cmd(e):
     if check_cover(e): return
     idx = int(e.pattern_match.group(1)) - 1
@@ -1616,7 +1741,7 @@ async def deltodo_cmd(e):
         await e.edit(f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!afk(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!afk(?:\s+(.+))?$', func=owner_filter))
 async def afk_cmd(e):
     if check_cover(e): return
     reason = (e.pattern_match.group(1) or '').strip()
@@ -1625,7 +1750,7 @@ async def afk_cmd(e):
     await e.edit(f"😴 **AFK включён**{r}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!unafk$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!unafk$', func=owner_filter))
 async def unafk_cmd(e):
     if check_cover(e): return
     dur = state.clear_afk()
@@ -1635,7 +1760,7 @@ async def unafk_cmd(e):
         await e.edit("ℹ️ AFK не был включён")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!chatinfo$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!chatinfo$', func=owner_filter))
 async def chatinfo_cmd(e):
     if check_cover(e): return
     chat = await e.get_chat()
@@ -1657,7 +1782,7 @@ async def chatinfo_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!members$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!members$', func=owner_filter))
 async def members_cmd(e):
     if check_cover(e): return
     try:
@@ -1668,7 +1793,7 @@ async def members_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!admins$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!admins$', func=owner_filter))
 async def admins_cmd(e):
     if check_cover(e): return
     try:
@@ -1682,7 +1807,7 @@ async def admins_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!top(?:\s+(\d+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!top(?:\s+(\d+))?$', func=owner_filter))
 async def top_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 200)
@@ -1704,7 +1829,7 @@ async def top_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!bots$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!bots$', func=owner_filter))
 async def bots_cmd(e):
     if check_cover(e): return
     try:
@@ -1717,7 +1842,7 @@ async def bots_cmd(e):
         await e.edit(f"❌ {ex}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!resetdata$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!resetdata$', func=owner_filter))
 async def resetdata_cmd(e):
     if check_cover(e): return
     db.clear_all()
@@ -1726,22 +1851,12 @@ async def resetdata_cmd(e):
     state.ghost_mode = False
     state.afk_start_time = None
     state.afk_reason = ''
+    state.sudo_users.clear()
     state._save()
     await e.edit("🧹 **Все данные сброшены.**")
     db.bump_stat('cmds')
 
-def _resolve_format(height):
-    has_ffmpeg = _detect_ffmpeg() is not None
-    if not height:
-        return 'bestvideo+bestaudio/best' if has_ffmpeg else 'best'
-    if height <= 144:
-        return 'worst'
-    if has_ffmpeg:
-        return f'bestvideo[height<=?{height}]+bestaudio/best[height<=?{height}]/best'
-    return f'best[height<=?{height}]'
-
-
-@client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=owner_filter))
 async def ytshow_cmd(e):
     if check_cover(e): return
     raw = e.pattern_match.group(1).strip()
@@ -1756,18 +1871,13 @@ async def ytshow_cmd(e):
     async def edit_fn(text):
         await e.edit(text)
 
-    ydl_opts = {
-        'format': _resolve_format(height),
-        'outtmpl': './media/%(id)s.%(ext)s',
-    }
-
     await edit_fn(f"⏳ Загружаю ({'авто' if not height else f'{height}p'})...")
-    filename = await _run_download(edit_fn, url, ydl_opts, timeout=600)
+    filename = await _run_download(edit_fn, url, mode='video', quality=height, timeout=600)
     if filename:
         await _send_and_clean(edit_fn, e.chat_id, filename, f"🎬 YouTube: {url}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!dl\s+(.+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!dl\s+(.+)', func=owner_filter))
 async def dl_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
@@ -1775,13 +1885,9 @@ async def dl_cmd(e):
     async def edit_fn(text):
         await e.edit(text)
 
-    ydl_opts = {
-        'format': _resolve_format(None),
-        'outtmpl': './media/%(id)s.%(ext)s',
-    }
-    await edit_fn("⏳ Универсальная загрузка...")
+    await edit_fn("⏳ Загрузка...")
     try:
-        filename = await _run_download(edit_fn, url, ydl_opts, timeout=600)
+        filename = await _run_download(edit_fn, url, mode='video', timeout=600)
         if filename:
             await _send_and_clean(edit_fn, e.chat_id, filename)
     except Exception as ex:
@@ -1790,7 +1896,7 @@ async def dl_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!playlist\s+(.+?)(?:\s+(\d+)(?:-(\d+))?)?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!playlist\s+(.+?)(?:\s+(\d+)(?:-(\d+))?)?$', func=owner_filter))
 async def playlist_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -1803,40 +1909,29 @@ async def playlist_cmd(e):
 
     msg = await e.edit("⏳ Получаю информацию о плейлисте...")
     try:
-        ydl_opts = {
-            'extract_flat': 'in_playlist',
-            'quiet': True,
-            'no_warnings': True,
-        }
-        cookies_path = _find_cookies()
-        if cookies_path:
-            ydl_opts['cookiefile'] = cookies_path
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        def _get_playlist_info():
+            pl = Playlist(url)
+            return pl.title, list(pl.video_urls)
 
-        entries = info.get('entries', [])
-        if not entries:
+        loop = asyncio.get_event_loop()
+        title, video_urls = await loop.run_in_executor(None, _get_playlist_info)
+
+        if not video_urls:
             await msg.edit("❌ Плейлист пуст или недоступен.")
             return
 
-        total = len(entries)
+        total = len(video_urls)
         if start_num:
             s = max(1, start_num)
             e_idx = min(total, end_num) if end_num else min(total, s)
-            selected = entries[s - 1:e_idx]
+            selected = video_urls[s - 1:e_idx]
         else:
-            selected = entries[:50]
+            selected = video_urls[:50]
 
-        await msg.edit(f"📋 Плейлист: **{info.get('title', '?')}** ({len(selected)}/{total} видео)\n⏳ Начинаю загрузку...")
+        await msg.edit(f"📋 Плейлист: **{title or '?'}** ({len(selected)}/{total} видео)\n⏳ Начинаю загрузку...")
 
-        for i, entry in enumerate(selected, 1):
-            video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-            vid_msg = await e.edit(f"⏳ [{i}/{len(selected)}] Загружаю: {entry.get('title', '?')}...")
-
-            ydl_opts2 = {
-                'format': _resolve_format(None),
-                'outtmpl': './media/%(id)s.%(ext)s',
-            }
+        for i, video_url in enumerate(selected, 1):
+            vid_msg = await e.edit(f"⏳ [{i}/{len(selected)}] Загружаю видео {i}...")
 
             async def edit_vid(text, vid_msg=vid_msg):
                 try:
@@ -1844,9 +1939,9 @@ async def playlist_cmd(e):
                 except Exception:
                     pass
 
-            filename = await _run_download(edit_vid, video_url, ydl_opts2, timeout=600)
+            filename = await _run_download(edit_vid, video_url, mode='video', timeout=600)
             if filename:
-                await _send_and_clean(edit_vid, e.chat_id, filename, f"🎬 [{i}/{len(selected)}] {entry.get('title', '')}")
+                await _send_and_clean(edit_vid, e.chat_id, filename, f"🎬 [{i}/{len(selected)}]")
                 await asyncio.sleep(2)
 
         await e.edit(f"✅ **Плейлист загружен!** ({len(selected)}/{total} видео)")
@@ -1856,43 +1951,26 @@ async def playlist_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!audio\s+(.+?)(?:\s+(mp3|m4a|opus))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!audio\s+(.+)', func=owner_filter))
 async def audio_cmd(e):
     if check_cover(e): return
-    g = e.pattern_match
-    url = g.group(1).strip()
-    fmt = (g.group(2) or 'mp3').lower()
+    url = e.pattern_match.group(1).strip()
 
     async def edit_fn(text):
         await e.edit(text)
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': f'./media/%(id)s.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': fmt,
-            'preferredquality': '192',
-        }],
-    }
-    await edit_fn(f"⏳ Извлекаю аудио ({fmt.upper()})...")
+    await edit_fn("🎵 Скачиваю аудио...")
     try:
-        filename = await _run_download(edit_fn, url, ydl_opts, timeout=600)
+        filename = await _run_download(edit_fn, url, mode='audio', timeout=600)
         if filename:
-            audio_file = filename.rsplit('.', 1)[0] + '.' + fmt
-            if os.path.exists(audio_file):
-                await _send_and_clean(edit_fn, e.chat_id, audio_file, f"🎵 Аудио ({fmt.upper()})")
-            elif filename and os.path.exists(filename):
-                await _send_and_clean(edit_fn, e.chat_id, filename, f"🎵 Аудио ({fmt.upper()})")
-            else:
-                await e.edit("❌ Файл не найден после конвертации.")
+            await _send_and_clean(edit_fn, e.chat_id, filename, f"🎵 Аудио")
     except Exception as ex:
         await e.edit(f"❌ Ошибка: {ex}")
         logger.error(f"audio error: {ex}")
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!sub\s+(.+?)(?:\s+(\w{2}))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!sub\s+(.+?)(?:\s+(\w{2}))?$', func=owner_filter))
 async def sub_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -1901,32 +1979,30 @@ async def sub_cmd(e):
 
     msg = await e.edit(f"⏳ Ищу субтитры ({lang})...")
     try:
-        ydl_opts = {
-            'writesubtitles': True,
-            'subtitleslangs': [lang],
-            'skip_download': True,
-            'outtmpl': './media/%(id)s',
-            'quiet': True,
-            'no_warnings': True,
-        }
-        cookies_path = _find_cookies()
-        if cookies_path:
-            ydl_opts['cookiefile'] = cookies_path
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        def _get_captions():
+            yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+            captions = yt.captions
+            caption = captions.get(lang)
+            if not caption:
+                for code in captions:
+                    if code.startswith(lang):
+                        caption = captions[code]
+                        break
+            if caption:
+                return caption.generate_srt_captions()
+            return None
 
-        sub_file = None
-        for f in os.listdir('./media'):
-            if f.endswith('.vtt') or f.endswith('.srt') or f.endswith('.ass'):
-                if info.get('id', '') in f:
-                    sub_file = os.path.join('./media', f)
-                    break
+        loop = asyncio.get_event_loop()
+        srt_content = await loop.run_in_executor(None, _get_captions)
 
-        if sub_file:
+        if srt_content:
+            sub_path = os.path.join(MEDIA_DIR, f'sub_{lang}.srt')
+            with open(sub_path, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
             await msg.edit(f"📤 Отправляю субтитры ({lang})...")
-            await client.send_file(e.chat_id, sub_file, caption=f"📝 Субтитры ({lang})")
+            await client.send_file(e.chat_id, sub_path, caption=f"📝 Субтитры ({lang})")
             await asyncio.sleep(3)
-            os.remove(sub_file)
+            os.remove(sub_path)
             await msg.edit(f"✅ Субтитры ({lang}) отправлены.")
         else:
             await msg.edit(f"❌ Субтитры ({lang}) не найдены для этого видео.")
@@ -1936,7 +2012,7 @@ async def sub_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!watch\s+(on|off)$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!watch\s+(on|off)$', func=owner_filter))
 async def watch_cmd(e):
     global _watch_task
     arg = e.pattern_match.group(1)
@@ -1949,7 +2025,7 @@ async def watch_cmd(e):
             result = await client(GetAuthorizationsRequest())
             for auth in result.authorizations:
                 h = hashlib.md5(f"{auth.hash}{auth.device_model}{auth.platform}".encode()).hexdigest()
-                db.save_session(h, f'{{"device":"{auth.device_model}","platform":"{auth.platform}","ip":"{auth.ip}","date":"{auth.date_created}"}}')
+                db.save_session(h, json.dumps({"device": auth.device_model, "platform": auth.platform, "ip": auth.ip, "date": str(auth.date_created)}))
         except Exception as ex:
             logger.warning(f"Init sessions: {ex}")
 
@@ -1961,7 +2037,7 @@ async def watch_cmd(e):
                     for auth in result.authorizations:
                         h = hashlib.md5(f"{auth.hash}{auth.device_model}{auth.platform}".encode()).hexdigest()
                         if h not in known:
-                            db.save_session(h, f'{{"device":"{auth.device_model}","platform":"{auth.platform}","ip":"{auth.ip}","date":"{auth.date_created}"}}')
+                            db.save_session(h, json.dumps({"device": auth.device_model, "platform": auth.platform, "ip": auth.ip, "date": str(auth.date_created)}))
                             me = await client.get_me()
                             await client.send_message(me.id, f"⚠️ **Новый вход**\nУстройство: {auth.device_model}\nПлатформа: {auth.platform}\nIP: {auth.ip}\nДата: {auth.date_created}")
                             logger.warning(f"New session: {auth.device_model} {auth.ip}")
@@ -1979,13 +2055,13 @@ async def watch_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!check_email\s+(\S+)', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!check_email\s+(\S+)', func=owner_filter))
 async def check_email_cmd(e):
     if check_cover(e): return
     email = e.pattern_match.group(1).strip().lower()
     msg = await e.edit(f"🔍 Проверяю {email}...")
     try:
-        headers = {'hibp-api-key': '', 'User-Agent': 'TelegramUserBot/1.0'}
+        headers = {'hibp-api-key': HIBP_API_KEY, 'User-Agent': 'TelegramUserBot/1.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(
                 f'https://haveibeenpwned.com/api/v3/breachedaccount/{email}',
@@ -2013,7 +2089,7 @@ async def check_email_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!protect\s+(on|off)$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!protect\s+(on|off)$', func=owner_filter))
 async def protect_cmd(e):
     global _protect_task
     arg = e.pattern_match.group(1)
@@ -2021,7 +2097,7 @@ async def protect_cmd(e):
         if _protect_task and not _protect_task.done():
             await e.edit("⚠️ Защита уже включена.")
             return
-        dialogs = await client.get_dialogs()
+        dialogs = await client.get_dialogs(limit=1000)
         db.clear_protected_chats()
         for d in dialogs:
             db.add_protected_chat(d.id)
@@ -2030,7 +2106,7 @@ async def protect_cmd(e):
         async def monitor():
             while True:
                 try:
-                    current = {d.id for d in await client.get_dialogs()}
+                    current = {d.id for d in await client.get_dialogs(limit=1000)}
                     protected = set(db.get_protected_chat_ids())
                     missing = protected - current
                     for cid in missing:
@@ -2064,6 +2140,10 @@ async def private_handler(event):
     uid = sender.id
     now = time.time()
 
+    if len(reply_cooldown) > MAX_COOLDOWN_ENTRIES:
+        cutoff = now - 3600
+        reply_cooldown = {k: v for k, v in reply_cooldown.items() if v > cutoff}
+
     if state.mute_enabled:
         logger.info(f"🔇 Mute — игнорирую {uid}")
         return
@@ -2074,21 +2154,36 @@ async def private_handler(event):
             if uid == me.id:
                 pass
             else:
-                is_contact = False
-                try:
-                    contact = await client.get_entity(uid)
-                    is_contact = getattr(contact, 'contact', False)
-                except Exception:
-                    pass
-                if not is_contact:
-                    common = await client.get_common_chats(uid)
-                    if not common:
-                        logger.info(f"🔒 Lock: {uid} не контакт и нет общих чатов — игнорирую")
-                        return
+                is_contact = db.get_saved(f'_lock_cache_{uid}')
+                if is_contact is None:
+                    is_contact = '0'
+                    try:
+                        contact = await client.get_entity(uid)
+                        if getattr(contact, 'contact', False):
+                            is_contact = '1'
+                    except Exception:
+                        pass
+                    if is_contact == '0':
+                        try:
+                            common = await client.get_common_chats(uid)
+                            if common:
+                                is_contact = '1'
+                        except Exception:
+                            pass
+                    db.set_saved(f'_lock_cache_{uid}', is_contact)
+                if is_contact == '0':
+                    logger.info(f"🔒 Lock: {uid} не контакт и нет общих чатов — игнорирую")
+                    return
         except Exception as ex:
             logger.warning(f"Lock check error for {uid}: {ex}")
 
     silent_mode = state.silent_enabled
+
+    if state.readreceipt_enabled:
+        try:
+            await client.send_read_acknowledge(event.chat_id, event.message)
+        except Exception:
+            pass
 
     if event.reply_to_msg_id:
         try:
@@ -2110,11 +2205,16 @@ async def private_handler(event):
                     else:
                         reply_text = get_rp_reply(cmd_part)
 
-                    sent = await event.reply(f"{action_text}\n{reply_text}")
+                    if state.typing_enabled:
+                        async with client.action(event.chat_id, 'typing'):
+                            await asyncio.sleep(0.8)
+                    sent = await safe_flood(lambda: event.reply(f"{action_text}\n{reply_text}"))
                     logger.info(f"✅ RP: {user_name} -> {target_name} ({cmd_part}) | реплика: {'кастом' if custom_reply else 'рандом'}")
 
-                    if state.shadow_enabled:
+                    if state.ghost_mode or state.shadow_enabled:
                         asyncio.create_task(shadow_delete_msg(sent))
+                    if state.autodel_enabled:
+                        asyncio.create_task(shadow_delete_msg(sent, state.autodel_delay))
 
                     db.bump_stat('cmds')
                     return
@@ -2128,9 +2228,14 @@ async def private_handler(event):
             dur = fmt_time(now - state.afk_start_time)
             reason_part = f"\n📝 _{state.afk_reason}_" if state.afk_reason else ""
             reply_cooldown[f'afk_{uid}'] = now
-            sent = await event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}")
-            if state.shadow_enabled:
+            if state.typing_enabled:
+                async with client.action(event.chat_id, 'typing'):
+                    await asyncio.sleep(0.8)
+            sent = await safe_flood(lambda: event.reply(f"😴 Хозяин AFK уже **{dur}**{reason_part}"))
+            if state.ghost_mode or state.shadow_enabled:
                 asyncio.create_task(shadow_delete_msg(sent))
+            if state.autodel_enabled:
+                asyncio.create_task(shadow_delete_msg(sent, state.autodel_delay))
 
     if state.auto_reply_enabled and now - reply_cooldown.get(uid, 0) > 10:
         reply_text = db.get_reply_text(uid)
@@ -2140,12 +2245,30 @@ async def private_handler(event):
             reply_text = state.auto_reply_text if state.auto_reply_text else None
         if reply_text and not silent_mode:
             reply_cooldown[uid] = now
-            await asyncio.sleep(1)
-            sent = await event.reply(reply_text)
-            if state.shadow_enabled:
+            if state.reply_delay:
+                await asyncio.sleep(state.reply_delay)
+            if state.typing_enabled:
+                async with client.action(event.chat_id, 'typing'):
+                    await asyncio.sleep(0.8)
+            sent = await safe_flood(lambda: event.reply(reply_text))
+            if state.ghost_mode or state.shadow_enabled:
                 asyncio.create_task(shadow_delete_msg(sent))
+            if state.autodel_enabled:
+                asyncio.create_task(shadow_delete_msg(sent, state.autodel_delay))
         elif silent_mode:
             logger.info(f"🔇 Silent — автоответ скрыт для {uid}")
+
+async def safe_flood(coro_factory, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return await coro_factory()
+        except FloodWaitError as e:
+            logger.warning(f"FloodWait: {e.seconds}s, попытка {attempt + 1}/{max_retries}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(e.seconds + 1)
+            else:
+                raise
+
 
 async def shadow_delete_msg(msg, delay=None):
     d = delay or state.shadow_delay or 5
@@ -2192,6 +2315,10 @@ CMD_DESCS = {
     'shadow':      {'desc': 'Автоудаление ответов через N сек', 'syntax': '!shadow [сек]', 'example': '!shadow 10'},
     'lock':        {'desc': 'Отвечать только контактам', 'syntax': '!lock [on|off]', 'example': '!lock on'},
     'mute':        {'desc': 'Игнорировать все ЛС', 'syntax': '!mute [on|off]', 'example': '!mute on'},
+    'typing':      {'desc': 'Показывать «печатает…» перед ответом', 'syntax': '!typing [on|off]', 'example': '!typing on'},
+    'autodel':     {'desc': 'Автоудаление всех исходящих сообщений', 'syntax': '!autodel [on|off] [сек]', 'example': '!autodel on 10'},
+    'delay':       {'desc': 'Задержка перед автоответом (симуляция человека)', 'syntax': '!delay [сек]', 'example': '!delay 3'},
+    'readreceipt': {'desc': 'Отмечать ЛС прочитанными', 'syntax': '!readreceipt [on|off]', 'example': '!readreceipt off'},
     'online':      {'desc': 'Установить статус «онлайн»', 'syntax': '!online', 'example': '!online'},
     'offline':     {'desc': 'Установить статус «недавно»', 'syntax': '!offline', 'example': '!offline'},
     'status_reset':{'desc': 'Сбросить все стелс-режимы', 'syntax': '!status_reset', 'example': '!status_reset'},
@@ -2219,11 +2346,11 @@ CMD_DESCS = {
     'choose':       {'desc': 'Случайный выбор', 'syntax': '!choose [вар1, вар2]', 'example': '!choose пицца, суши'},
     'quiz':         {'desc': 'Викторина', 'syntax': '!quiz', 'example': '!quiz'},
     # youtube
-    'ytshow':       {'desc': 'Скачать и отправить видео с YouTube', 'syntax': '!ytshow <URL> [качество]', 'example': '!ytshow https://youtu.be/... 720'},
-    'dl':           {'desc': 'Универсальная загрузка', 'syntax': '!dl <URL>', 'example': '!dl https://www.tiktok.com/@user/video/123'},
-    'playlist':     {'desc': 'Скачать плейлист', 'syntax': '!playlist <URL> [кол-во] | [start-end]', 'example': '!playlist https://youtube.com/playlist?list=... 5'},
-    'audio':        {'desc': 'Скачать аудио (MP3/M4A/OPUS)', 'syntax': '!audio <URL> [формат]', 'example': '!audio https://youtu.be/... mp3'},
-    'sub':          {'desc': 'Скачать субтитры', 'syntax': '!sub <URL> [язык]', 'example': '!sub https://youtu.be/... ru'},
+    'ytshow':       {'desc': 'Скачать видео с YouTube', 'syntax': '!ytshow <URL> [качество]', 'example': '!ytshow https://youtu.be/... 720'},
+    'dl':           {'desc': 'Скачать видео (YouTube / Instagram / TikTok)', 'syntax': '!dl <URL>', 'example': '!dl https://www.tiktok.com/@user/video/...'},
+    'playlist':     {'desc': 'Скачать плейлист YouTube', 'syntax': '!playlist <URL> [кол-во] | [start-end]', 'example': '!playlist https://youtube.com/playlist?list=... 5'},
+    'audio':        {'desc': 'Скачать аудио с YouTube', 'syntax': '!audio <URL>', 'example': '!audio https://youtu.be/...'},
+    'sub':          {'desc': 'Скачать субтитры с YouTube', 'syntax': '!sub <URL> [язык]', 'example': '!sub https://youtu.be/... ru'},
     # утилиты
     'calc':         {'desc': 'Калькулятор', 'syntax': '!calc [выражение]', 'example': '!calc 2+2*2'},
     'remind':       {'desc': 'Напоминание', 'syntax': '!remind [сек] [текст]', 'example': '!remind 60 Поставить чайник'},
@@ -2281,6 +2408,7 @@ CMD_DESCS = {
     'top':          {'desc': 'Топ активных пользователей', 'syntax': '!top [n]', 'example': '!top 100'},
     'bots':         {'desc': 'Список ботов в чате', 'syntax': '!bots', 'example': '!bots'},
     # безопасность
+    'sudo':         {'desc': 'Управление sudo-пользователями', 'syntax': '!sudo [on|off] @user', 'example': '!sudo on @durov'},
     'watch':        {'desc': 'Мониторинг новых сессий', 'syntax': '!watch [on|off]', 'example': '!watch on'},
     'check_email':  {'desc': 'Проверить email на утечки (HIBP)', 'syntax': '!check_email <email>', 'example': '!check_email test@example.com'},
     'protect':      {'desc': 'Защита от удаления чатов', 'syntax': '!protect [on|off]', 'example': '!protect on'},
@@ -2295,6 +2423,7 @@ COMMANDS_LIST = {
     ],
     'стелс': [
         '!cover', '!silent', '!shadow', '!lock', '!mute',
+        '!typing', '!autodel', '!delay', '!readreceipt',
         '!online', '!offline', '!status_reset'
     ],
     'профиль': [
@@ -2323,7 +2452,7 @@ COMMANDS_LIST = {
         '!todo', '!todos', '!done', '!undone', '!deltodo'
     ],
     'безопасность': [
-        '!watch', '!check_email', '!protect'
+        '!sudo', '!watch', '!check_email', '!protect'
     ],
     'afk': ['!afk', '!unafk'],
     'инфо': ['!chatinfo', '!members', '!admins', '!top', '!bots'],
@@ -2358,6 +2487,10 @@ HELP_CATS = {
         "`!shadow [сек]` — автоудаление ответов\n"
         "`!lock [on|off]` — только контактам\n"
         "`!mute [on|off]` — игнор всех ЛС\n"
+        "`!typing [on|off]` — показывать «печатает…»\n"
+        "`!autodel [on|off] [сек]` — автовудаление исходящих\n"
+        "`!delay [сек]` — задержка перед автоответом\n"
+        "`!readreceipt [on|off]` — отмечать прочитанным\n"
         "`!online` — статус «онлайн»\n"
         "`!offline` — статус «недавно»\n"
         "`!status_reset` — сброс всех стелс-режимов"
@@ -2386,12 +2519,12 @@ HELP_CATS = {
     ),
     'youtube': (
         "🎬 **ЗАГРУЗКА МЕДИА**\n\n"
-        "`!ytshow <URL> [качество]` — скачать и отправить видео с YouTube\n"
-        "`!dl <URL>` — универсальная загрузка (YouTube, TikTok, Instagram и др.)\n"
-        "`!playlist <URL> [кол-во | start-end]` — загрузка плейлиста (до 50)\n"
-        "`!audio <URL> [mp3|m4a|opus]` — извлечение аудио\n"
-        "`!sub <URL> [ru|en]` — скачать субтитры в SRT\n\n"
-        "💡 Прогресс обновляется каждые 5 сек. Таймаут — 10 мин."
+        "`!ytshow <URL> [качество]` — скачать видео с YouTube\n"
+        "`!dl <URL>` — скачать видео (YouTube / Instagram / TikTok)\n"
+        "`!playlist <URL> [кол-во | start-end]` — загрузка плейлиста YouTube\n"
+        "`!audio <URL>` — скачать аудио с YouTube\n"
+        "`!sub <URL> [ru|en]` — скачать субтитры с YouTube\n\n"
+        "💡 Таймаут — 10 мин."
     ),
     'утилиты': (
         "🛠 **УТИЛИТЫ**\n\n"
@@ -2435,6 +2568,7 @@ HELP_CATS = {
     ),
     'безопасность': (
         "🔐 **БЕЗОПАСНОСТЬ**\n\n"
+        "`!sudo [on|off] @user` — управление sudo-доступом\n"
         "`!watch [on|off]` — мониторинг новых сессий\n"
         "`!check_email <email>` — проверка утечек через HIBP\n"
         "`!protect [on|off]` — защита от удаления чатов"
@@ -2459,12 +2593,14 @@ HELP_CATS = {
         "**Список команд:** `!rphelp`\n\n"
         "**Пример:** ответьте `обнять` + Enter + `Ты моя сладкая`\n"
         "→ отправит `🤗 ...обнял... Ты моя сладкая`\n\n"
-        "**Категории:**\n"
-        f"{chr(10).join(f'• {cat.capitalize()}: {', '.join(get_category_commands(cat))}' for cat in get_all_categories())}"
+        "**Категории:**\n" + '\n'.join(
+            f'• {cat.capitalize()}: {", ".join(get_category_commands(cat))}'
+            for cat in get_all_categories()
+        )
     ),
 }
 
-@client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', func=owner_filter))
 async def help_cmd(e):
     if check_cover(e): return
     arg = (e.pattern_match.group(1) or '').strip().lower()
@@ -2527,7 +2663,7 @@ async def help_cmd(e):
     await e.edit("\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!commands$', func=lambda e: e.sender_id == 5457847440))
+@client.on(events.NewMessage(pattern=r'!commands$', func=owner_filter))
 async def commands_cmd(e):
     if check_cover(e): return
     await e.edit("ℹ️ Используйте `!help all` для списка всех команд с описанием.")
@@ -2535,7 +2671,7 @@ async def commands_cmd(e):
 
 if __name__ == "__main__":
     print("🚀 Запуск UserBot (с RP-командами)...")
-    os.makedirs('./media', exist_ok=True)
+    os.makedirs(MEDIA_DIR, exist_ok=True)
     Thread(target=run_web, daemon=True).start()
     client.start()
     print("✅ Бот запущен! Логи в консоли.")

@@ -6,6 +6,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+_VALID_TABLES = frozenset({
+    'bot_state', 'saved_data', 'notes', 'todos', 'stats',
+    'reply_settings', 'sessions', 'protected_chats',
+})
+
+
+def _validate_table(table):
+    if table not in _VALID_TABLES:
+        raise ValueError(f"Invalid table name: {table}")
+    return table
+
+
 class Storage:
     _instance = None
     _lock = threading.Lock()
@@ -43,6 +55,7 @@ class Storage:
     # ── Generic helpers ──
 
     def _get(self, table, key, default=None):
+        _validate_table(table)
         with self.lock:
             cur = self.conn.cursor()
             cur.execute(f'SELECT value FROM {table} WHERE key = ?', (key,))
@@ -50,33 +63,39 @@ class Storage:
             return row[0] if row else default
 
     def _set(self, table, key, value):
+        _validate_table(table)
         with self.lock:
             self.conn.execute(f'INSERT OR REPLACE INTO {table} (key, value) VALUES (?, ?)', (key, value))
             self.conn.commit()
 
     def _delete(self, table, key):
+        _validate_table(table)
         with self.lock:
             self.conn.execute(f'DELETE FROM {table} WHERE key = ?', (key,))
             self.conn.commit()
 
     def _get_all(self, table):
+        _validate_table(table)
         with self.lock:
             cur = self.conn.cursor()
             cur.execute(f'SELECT key, value FROM {table}')
             return {row[0]: row[1] for row in cur.fetchall()}
 
     def _delete_all(self, table):
+        _validate_table(table)
         with self.lock:
             self.conn.execute(f'DELETE FROM {table}')
             self.conn.commit()
 
     def _keys(self, table):
+        _validate_table(table)
         with self.lock:
             cur = self.conn.cursor()
             cur.execute(f'SELECT key FROM {table}')
             return [row[0] for row in cur.fetchall()]
 
     def _search(self, table, query):
+        _validate_table(table)
         q = f'%{query.lower()}%'
         with self.lock:
             cur = self.conn.cursor()
@@ -175,9 +194,8 @@ class Storage:
         return {k: int(v) for k, v in raw.items()}
 
     def clear_all(self):
-        tables = ['bot_state', 'saved_data', 'notes', 'todos', 'stats', 'reply_settings', 'sessions', 'protected_chats']
         with self.lock:
-            for t in tables:
+            for t in _VALID_TABLES:
                 self.conn.execute(f'DELETE FROM {t}')
             self.conn.commit()
 

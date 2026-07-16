@@ -1,4 +1,6 @@
 telethon
 flask
 aiohttp
-yt-dlp
+pytubefix
+instaloader
+requests
