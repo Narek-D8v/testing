@@ -2185,7 +2185,7 @@ async def private_handler(event):
         except Exception:
             pass
 
-    if event.reply_to_msg_id:
+    if event.reply_to_msg_id and not event.out:
         try:
             reply_msg = await event.get_reply_message()
             if reply_msg and reply_msg.sender_id:
@@ -2193,33 +2193,25 @@ async def private_handler(event):
                 lines = raw_text.split('\n', 1)
                 cmd_part = lines[0].strip().lower()
                 custom_reply = lines[1].strip() if len(lines) > 1 else None
-
                 if cmd_part in RP_COMMANDS:
                     target_entity = await client.get_entity(reply_msg.sender_id)
                     target_name = target_entity.first_name or "пользователь"
                     user_name = sender.first_name or "Кто-то"
-
                     action_text = format_rp_action(cmd_part, user_name, target_name)
-                    if custom_reply:
-                        reply_text = custom_reply
-                    else:
-                        reply_text = get_rp_reply(cmd_part)
-
+                    reply_text = custom_reply or get_rp_reply(cmd_part)
                     if state.typing_enabled:
                         async with client.action(event.chat_id, 'typing'):
                             await asyncio.sleep(0.8)
                     sent = await safe_flood(lambda: event.reply(f"{action_text}\n{reply_text}"))
-                    logger.info(f"✅ RP: {user_name} -> {target_name} ({cmd_part}) | реплика: {'кастом' if custom_reply else 'рандом'}")
-
+                    logger.info(f"✅ RP (in): {user_name} -> {target_name} ({cmd_part})")
                     if state.ghost_mode or state.shadow_enabled:
                         asyncio.create_task(shadow_delete_msg(sent))
                     if state.autodel_enabled:
                         asyncio.create_task(shadow_delete_msg(sent, state.autodel_delay))
-
                     db.bump_stat('cmds')
                     return
         except Exception as e:
-            logger.error(f"Ошибка RP: {e}")
+            logger.error(f"RP error (in): {e}")
 
     if state.afk_start_time and now - reply_cooldown.get(f'afk_{uid}', 0) > 60:
         if silent_mode:
@@ -2277,6 +2269,39 @@ async def shadow_delete_msg(msg, delay=None):
         await msg.delete()
     except Exception:
         pass
+
+@client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private and e.reply_to_msg_id))
+async def rp_outgoing_handler(event):
+    if event.sender_id != OWNER_ID and event.sender_id not in state.sudo_users:
+        return
+    try:
+        reply_msg = await event.get_reply_message()
+        if not reply_msg or not reply_msg.sender_id:
+            return
+        raw_text = event.raw_text.strip()
+        lines = raw_text.split('\n', 1)
+        cmd_part = lines[0].strip().lower()
+        if cmd_part not in RP_COMMANDS:
+            return
+        custom_reply = lines[1].strip() if len(lines) > 1 else None
+        target_entity = await client.get_entity(reply_msg.sender_id)
+        target_name = target_entity.first_name or "пользователь"
+        me = await client.get_me()
+        user_name = me.first_name or "Кто-то"
+        action_text = format_rp_action(cmd_part, user_name, target_name)
+        reply_text = custom_reply or get_rp_reply(cmd_part)
+        if state.typing_enabled:
+            async with client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(0.8)
+        sent = await safe_flood(lambda: event.reply(f"{action_text}\n{reply_text}"))
+        logger.info(f"✅ RP: {user_name} -> {target_name} ({cmd_part}) | реплика: {'кастом' if custom_reply else 'рандом'}")
+        if state.ghost_mode or state.shadow_enabled:
+            asyncio.create_task(shadow_delete_msg(sent))
+        if state.autodel_enabled:
+            asyncio.create_task(shadow_delete_msg(sent, state.autodel_delay))
+        db.bump_stat('cmds')
+    except Exception as e:
+        logger.error(f"RP error: {e}")
 
 @client.on(events.NewMessage(pattern=r'^!rphelp$', func=lambda e: e.is_private))
 async def rphelp_cmd(event):
