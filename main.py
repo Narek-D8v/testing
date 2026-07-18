@@ -262,7 +262,7 @@ async def _download_yt_video(url, quality=None):
     def _dl():
         opts = dict(_YT_DL_OPTS)
         target = quality or 720
-        opts['format'] = f'best[height<={target}]'
+        opts['format'] = f'best[height<={target}]/best'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -279,7 +279,7 @@ async def _download_yt_video(url, quality=None):
 async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        opts['format'] = 'bestaudio'
+        opts['format'] = 'bestaudio/best'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
