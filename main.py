@@ -372,13 +372,17 @@ async def _download_instagram_video(url):
 
 async def _download_tiktok_video(url):
     def _dl():
+        sess = requests.Session()
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
         }
         try:
-            resp = requests.get(url, headers=headers, timeout=30)
+            resp = sess.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
             html = resp.text
         except requests.RequestException as ex:
@@ -408,8 +412,18 @@ async def _download_tiktok_video(url):
         if not video_url:
             raise ValueError("Не удалось найти видео на странице TikTok")
 
+        dl_headers = {
+            'User-Agent': headers['User-Agent'],
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': '*/*',
+            'Referer': url,
+            'Origin': 'https://www.tiktok.com',
+            'Sec-Fetch-Dest': 'video',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-site',
+        }
         try:
-            vr = requests.get(video_url, headers=headers, timeout=60)
+            vr = sess.get(video_url, headers=dl_headers, timeout=60)
             vr.raise_for_status()
         except requests.RequestException as ex:
             raise ValueError(f"Ошибка загрузки видео TikTok: {ex}")
