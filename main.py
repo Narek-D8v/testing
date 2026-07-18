@@ -252,6 +252,7 @@ _YT_DL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'merge_output_format': 'mp4',
+    'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'android_creator'], 'player_skip': ['webpage', 'configs']}},
 }
 
 
@@ -2014,6 +2015,7 @@ async def playlist_cmd(e):
                 'no_warnings': True,
                 'extract_flat': True,
                 'force_generic_extractor': False,
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -2101,6 +2103,7 @@ async def sub_cmd(e):
             opts = {
                 'quiet': True,
                 'no_warnings': True,
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
                 'writesubtitles': True,
                 'subtitleslangs': [lang],
                 'subtitlesformat': 'srt',
