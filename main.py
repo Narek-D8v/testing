@@ -254,19 +254,31 @@ _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
     'no_warnings': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'cachedir': False,
     'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
 }
+
+_HAS_FFMPEG = False
+try:
+    import subprocess
+    subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+    _HAS_FFMPEG = True
+except Exception:
+    pass
 
 
 async def _download_yt_video(url, quality=None):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        target = quality or 720
-        if quality:
-            opts['format'] = f'best[height<={target}]/best'
+        if _HAS_FFMPEG:
+            opts['format'] = 'bestvideo+bestaudio/best'
+            if quality:
+                opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+            opts['merge_output_format'] = 'mp4'
         else:
-            opts['format'] = 'best'
-        logger.info(f'yt-dlp format: {opts["format"]}')
+            opts['format'] = f'best[height<={quality or 720}]'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -279,15 +291,21 @@ async def _download_yt_video(url, quality=None):
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _dl)
+    return await asyncio.to_thread(_dl)
 
 
 async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        opts['format'] = 'bestaudio/best'
-        logger.info(f'yt-dlp format: {opts["format"]}')
+        if _HAS_FFMPEG:
+            opts['format'] = 'bestaudio/best'
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        else:
+            opts['format'] = 'bestaudio'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -300,8 +318,7 @@ async def _download_yt_audio(url):
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _dl)
+    return await asyncio.to_thread(_dl)
 
 
 async def _download_instagram_video(url):
@@ -2033,9 +2050,12 @@ async def playlist_cmd(e):
             opts = {
                 'quiet': True,
                 'no_warnings': True,
+                'noplaylist': True,
+                'nocheckcertificate': True,
+                'cachedir': False,
                 'extract_flat': True,
                 'force_generic_extractor': False,
-                'cookiefile': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
+                'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -2122,7 +2142,10 @@ async def sub_cmd(e):
             opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'cookiefile': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
+                'noplaylist': True,
+                'nocheckcertificate': True,
+                'cachedir': False,
+                'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
                 'writesubtitles': True,
                 'subtitleslangs': [lang],
                 'subtitlesformat': 'srt',
