@@ -20,7 +20,7 @@ from flask import Flask
 import yt_dlp
 
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, MessageNotModifiedError
 from telethon.tl.functions.account import (
     GetAuthorizationsRequest, UpdateProfileRequest, UpdateStatusRequest,
 )
@@ -236,7 +236,10 @@ def owner_filter(event):
 
 async def respond(event, text, **kwargs):
     if event.sender_id == OWNER_ID:
-        return await event.edit(text, **kwargs)
+        try:
+            return await event.edit(text, **kwargs)
+        except MessageNotModifiedError:
+            return None
     return await event.reply(text, **kwargs)
 
 
@@ -2077,7 +2080,6 @@ async def audio_cmd(e):
     async def edit_fn(text):
         await respond(e, text)
 
-    await edit_fn("🎵 Скачиваю аудио...")
     try:
         filename = await _run_download(edit_fn, url, mode='audio', timeout=600)
         if filename:
