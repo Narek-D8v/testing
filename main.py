@@ -254,7 +254,7 @@ _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
     'no_warnings': True,
-    'cookiefile': 'cookies.txt',
+    'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
 }
 
 
@@ -262,7 +262,11 @@ async def _download_yt_video(url, quality=None):
     def _dl():
         opts = dict(_YT_DL_OPTS)
         target = quality or 720
-        opts['format'] = f'best[height<={target}]/best'
+        if quality:
+            opts['format'] = f'best[height<={target}]/best'
+        else:
+            opts['format'] = 'best'
+        logger.info(f'yt-dlp format: {opts["format"]}')
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -270,6 +274,9 @@ async def _download_yt_video(url, quality=None):
                     return info['requested_downloads'][0]['filepath']
                 return ydl.prepare_filename(info)
         except yt_dlp.utils.DownloadError as ex:
+            raise ValueError(f"YouTube: {ex}")
+        except Exception as ex:
+            logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
     loop = asyncio.get_event_loop()
@@ -280,6 +287,7 @@ async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
         opts['format'] = 'bestaudio/best'
+        logger.info(f'yt-dlp format: {opts["format"]}')
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -287,6 +295,9 @@ async def _download_yt_audio(url):
                     return info['requested_downloads'][0]['filepath']
                 return ydl.prepare_filename(info)
         except yt_dlp.utils.DownloadError as ex:
+            raise ValueError(f"YouTube: {ex}")
+        except Exception as ex:
+            logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
     loop = asyncio.get_event_loop()
@@ -2024,7 +2035,7 @@ async def playlist_cmd(e):
                 'no_warnings': True,
                 'extract_flat': True,
                 'force_generic_extractor': False,
-                'cookiefile': 'cookies.txt',
+                'cookiefile': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -2111,7 +2122,7 @@ async def sub_cmd(e):
             opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'cookiefile': 'cookies.txt',
+                'cookiefile': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
                 'writesubtitles': True,
                 'subtitleslangs': [lang],
                 'subtitlesformat': 'srt',
