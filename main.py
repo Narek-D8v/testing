@@ -18,6 +18,7 @@ import aiohttp
 import requests
 from flask import Flask
 from pytubefix import Playlist, YouTube
+from pytubefix.exceptions import BotDetection, LoginRequired, VideoRegionBlocked, VideoUnavailable
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
@@ -248,25 +249,57 @@ def format_bytes(n):
     return f"{n:.1f} ТБ"
 
 
+_YT_CLIENTS = ['ANDROID_VR', 'ANDROID_TESTSUITE', 'MWEB', 'TV']
+
 async def _download_yt_video(url, quality=None):
     def _dl():
-        yt = YouTube(url)
-        if quality:
-            stream = yt.streams.filter(res=f"{quality}p").first()
-            if not stream:
-                stream = yt.streams.get_highest_resolution()
-        else:
-            stream = yt.streams.get_highest_resolution()
-        return stream.download(output_path=MEDIA_DIR)
+        last_err = None
+        for client in _YT_CLIENTS:
+            try:
+                yt = YouTube(url, client=client)
+                if quality:
+                    stream = yt.streams.filter(res=f"{quality}p").first()
+                    if not stream:
+                        stream = yt.streams.get_highest_resolution()
+                else:
+                    stream = yt.streams.get_highest_resolution()
+                if stream:
+                    return stream.download(output_path=MEDIA_DIR)
+                last_err = ValueError(f"{client}: нет доступного потока")
+            except BotDetection:
+                logger.warning(f"YouTube {client} detected as bot, trying next...")
+                last_err = BotDetection(f"{client}: заблокирован")
+            except (LoginRequired, VideoRegionBlocked, VideoUnavailable) as ex:
+                logger.warning(f"YouTube {client}: {ex}")
+                last_err = ex
+            except Exception as ex:
+                logger.warning(f"YouTube {client}: {ex}")
+                last_err = ex
+        raise last_err or BotDetection(f"Все клиенты недоступны: {url}")
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
 
 async def _download_yt_audio(url):
     def _dl():
-        yt = YouTube(url)
-        stream = yt.streams.get_audio_only()
-        return stream.download(output_path=MEDIA_DIR)
+        last_err = None
+        for client in _YT_CLIENTS:
+            try:
+                yt = YouTube(url, client=client)
+                stream = yt.streams.get_audio_only()
+                if stream:
+                    return stream.download(output_path=MEDIA_DIR)
+                last_err = ValueError(f"{client}: нет аудиопотока")
+            except BotDetection:
+                logger.warning(f"YouTube {client} detected as bot, trying next...")
+                last_err = BotDetection(f"{client}: заблокирован")
+            except (LoginRequired, VideoRegionBlocked, VideoUnavailable) as ex:
+                logger.warning(f"YouTube {client}: {ex}")
+                last_err = ex
+            except Exception as ex:
+                logger.warning(f"YouTube {client}: {ex}")
+                last_err = ex
+        raise last_err or BotDetection(f"Все клиенты недоступны: {url}")
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
@@ -282,8 +315,12 @@ async def _download_instagram_video(url):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
         }
-        resp = requests.get(url, headers=headers, timeout=30)
-        html = resp.text
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            html = resp.text
+        except requests.RequestException as ex:
+            raise ValueError(f"Ошибка загрузки страницы Instagram: {ex}")
 
         video_url = None
         patterns = [
@@ -302,27 +339,36 @@ async def _download_instagram_video(url):
             if match:
                 try:
                     data = json.loads(match.group(1))
-                    for key in ('shortcode_media',):
-                        item = data.get(key) or next(iter(data.get('shortcode_media', {}).values()), None)
-                        if not item:
-                            for k, v in data.items():
-                                if isinstance(v, dict) and 'video_url' in v:
-                                    item = v
+                    for k, v in data.items():
+                        if isinstance(v, dict):
+                            if 'video_url' in v:
+                                video_url = v['video_url']
+                                break
+                            for k2, v2 in v.items():
+                                if isinstance(v2, dict) and 'video_url' in v2:
+                                    video_url = v2['video_url']
                                     break
-                        if item and 'video_url' in item:
-                            video_url = item['video_url']
-                            break
-                except Exception:
+                            if video_url:
+                                break
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
 
-        if video_url:
-            vr = requests.get(video_url, headers=headers, timeout=30)
-            if vr.status_code == 200:
-                path = os.path.join(MEDIA_DIR, f'instagram_{int(time.time())}.mp4')
-                with open(path, 'wb') as f:
-                    f.write(vr.content)
-                return path
-        raise ValueError("Не удалось найти видео на странице Instagram")
+        if not video_url:
+            raise ValueError("Не удалось найти видео на странице Instagram")
+
+        try:
+            vr = requests.get(video_url, headers=headers, timeout=60)
+            vr.raise_for_status()
+        except requests.RequestException as ex:
+            raise ValueError(f"Ошибка загрузки видео: {ex}")
+
+        try:
+            path = os.path.join(MEDIA_DIR, f'instagram_{int(time.time())}.mp4')
+            with open(path, 'wb') as f:
+                f.write(vr.content)
+            return path
+        except OSError as ex:
+            raise ValueError(f"Ошибка сохранения файла: {ex}")
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
@@ -334,8 +380,12 @@ async def _download_tiktok_video(url):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
         }
-        resp = requests.get(url, headers=headers, timeout=30)
-        html = resp.text
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            html = resp.text
+        except requests.RequestException as ex:
+            raise ValueError(f"Ошибка загрузки страницы TikTok: {ex}")
 
         video_url = None
         patterns = [
@@ -358,14 +408,22 @@ async def _download_tiktok_video(url):
             if match:
                 video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
 
-        if video_url:
-            vr = requests.get(video_url, headers=headers, timeout=30)
-            if vr.status_code == 200:
-                path = os.path.join(MEDIA_DIR, f'tiktok_{int(time.time())}.mp4')
-                with open(path, 'wb') as f:
-                    f.write(vr.content)
-                return path
-        return None
+        if not video_url:
+            raise ValueError("Не удалось найти видео на странице TikTok")
+
+        try:
+            vr = requests.get(video_url, headers=headers, timeout=60)
+            vr.raise_for_status()
+        except requests.RequestException as ex:
+            raise ValueError(f"Ошибка загрузки видео TikTok: {ex}")
+
+        try:
+            path = os.path.join(MEDIA_DIR, f'tiktok_{int(time.time())}.mp4')
+            with open(path, 'wb') as f:
+                f.write(vr.content)
+            return path
+        except OSError as ex:
+            raise ValueError(f"Ошибка сохранения файла: {ex}")
 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
@@ -417,6 +475,14 @@ async def _run_download(event_edit_func, url, mode='video', quality=None, timeou
             await event_edit_func("❌ Превышено время ожидания (10 мин).")
             logger.warning(f"Download timeout: {url}")
             return None
+        except ValueError as ex:
+            logger.warning(f"Download error: {ex}")
+            await event_edit_func(f"❌ {ex}")
+            return None
+        except BotDetection as ex:
+            logger.error(f"YouTube bot detection: {ex}")
+            await event_edit_func("❌ YouTube заблокировал запрос. Попробуй позже или другое видео.")
+            return None
         except Exception as ex:
             logger.error(f"Download error: {ex}", exc_info=True)
             await event_edit_func(f"❌ **Ошибка:** {ex}")
@@ -426,20 +492,32 @@ async def _run_download(event_edit_func, url, mode='video', quality=None, timeou
 async def _send_and_clean(event_edit_func, chat_id, filepath, caption=''):
     if not filepath or not os.path.exists(filepath):
         return
-    size_mb = os.path.getsize(filepath) / 1024 / 1024
+    try:
+        size_mb = os.path.getsize(filepath) / 1024 / 1024
+    except OSError:
+        return
     if size_mb > 1500:
         await event_edit_func("❌ Слишком большой файл (>1.5 ГБ).")
     else:
         await event_edit_func("📤 **Отправляю файл...**")
         try:
             await client.send_file(chat_id, filepath, caption=caption)
+        except FloodWaitError as fwe:
+            logger.warning(f"FloodWait при отправке: {fwe.seconds}s")
+            await asyncio.sleep(fwe.seconds + 1)
+            try:
+                await client.send_file(chat_id, filepath, caption=caption)
+            except Exception as ex2:
+                await event_edit_func(f"❌ Ошибка отправки: {ex2}")
         except Exception as ex:
             await event_edit_func(f"❌ Ошибка отправки: {ex}")
     await asyncio.sleep(5)
-    try:
-        os.remove(filepath)
-    except Exception:
-        pass
+    for _ in range(3):
+        try:
+            os.remove(filepath)
+            break
+        except OSError:
+            await asyncio.sleep(1)
 
 def create_client():
     if STRING_SESSION:
@@ -2012,7 +2090,7 @@ async def sub_cmd(e):
     msg = await respond(e, f"⏳ Ищу субтитры ({lang})...")
     try:
         def _get_captions():
-            yt = YouTube(url)
+            yt = YouTube(url, client='WEB')
             captions = yt.captions
             caption = captions.get(lang)
             if not caption:
