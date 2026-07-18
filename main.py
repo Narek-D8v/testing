@@ -278,7 +278,7 @@ async def _download_yt_video(url, quality=None):
                 opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
             opts['merge_output_format'] = 'mp4'
         else:
-            opts['format'] = f'best[height<={quality or 720}]'
+            opts['format'] = f'best[height<={quality or 720}]/best'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -2321,6 +2321,7 @@ async def protect_cmd(e):
 
 @client.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
+    global reply_cooldown
     sender = await event.get_sender()
     if not sender:
         return
