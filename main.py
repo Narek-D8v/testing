@@ -282,7 +282,8 @@ async def _download_yt_video(url, quality=None):
 async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
+        opts['format'] = 'bestaudio'
+        opts.pop('merge_output_format', None)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
