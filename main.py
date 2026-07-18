@@ -17,7 +17,6 @@ from threading import Thread
 import aiohttp
 import requests
 from flask import Flask
-from instaloader import Instaloader, Post
 from pytubefix import Playlist, YouTube
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
@@ -234,6 +233,12 @@ def owner_filter(event):
     return event.sender_id == OWNER_ID or event.sender_id in state.sudo_users
 
 
+async def respond(event, text, **kwargs):
+    if event.sender_id == OWNER_ID:
+        return await event.edit(text, **kwargs)
+    return await event.reply(text, **kwargs)
+
+
 def format_bytes(n):
     for unit in ('Б', 'КБ', 'МБ', 'ГБ'):
         if abs(n) < 1024:
@@ -244,7 +249,7 @@ def format_bytes(n):
 
 async def _download_yt_video(url, quality=None):
     def _dl():
-        yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+        yt = YouTube(url, use_po_token=True)
         if quality:
             stream = yt.streams.filter(res=f"{quality}p").first()
             if not stream:
@@ -258,7 +263,7 @@ async def _download_yt_video(url, quality=None):
 
 async def _download_yt_audio(url):
     def _dl():
-        yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+        yt = YouTube(url, use_po_token=True)
         stream = yt.streams.get_audio_only()
         return stream.download(output_path=MEDIA_DIR)
     loop = asyncio.get_event_loop()
@@ -269,25 +274,54 @@ async def _download_instagram_video(url):
     shortcode_match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
     if not shortcode_match:
         raise ValueError("Неверная ссылка Instagram")
-    shortcode = shortcode_match.group(1)
 
     def _dl():
-        loader = Instaloader(
-            download_videos=True, download_video_thumbnails=False,
-            download_geotags=False, download_comments=False,
-            save_metadata=False, compress_json=False,
-        )
-        post = Post.from_shortcode(loader.context, shortcode)
-        loader.download_post(post, target=os.path.join(MEDIA_DIR, shortcode))
-        folder = os.path.join(MEDIA_DIR, shortcode)
-        for f in os.listdir(folder):
-            if f.endswith('.mp4'):
-                src = os.path.join(folder, f)
-                dst = os.path.join(MEDIA_DIR, f)
-                os.rename(src, dst)
-                os.rmdir(folder)
-                return dst
-        return None
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        html = resp.text
+
+        video_url = None
+        patterns = [
+            r'<meta\s+property="og:video"\s+content="([^"]+)"',
+            r'"video_url":"([^"]+)"',
+            r'"video_download_url":"([^"]+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
+                break
+
+        if not video_url:
+            match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});', html, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group(1))
+                    for key in ('shortcode_media',):
+                        item = data.get(key) or next(iter(data.get('shortcode_media', {}).values()), None)
+                        if not item:
+                            for k, v in data.items():
+                                if isinstance(v, dict) and 'video_url' in v:
+                                    item = v
+                                    break
+                        if item and 'video_url' in item:
+                            video_url = item['video_url']
+                            break
+                except Exception:
+                    pass
+
+        if video_url:
+            vr = requests.get(video_url, headers=headers, timeout=30)
+            if vr.status_code == 200:
+                path = os.path.join(MEDIA_DIR, f'instagram_{int(time.time())}.mp4')
+                with open(path, 'wb') as f:
+                    f.write(vr.content)
+                return path
+        raise ValueError("Не удалось найти видео на странице Instagram")
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
@@ -313,7 +347,7 @@ async def _download_tiktok_video(url):
         for pattern in patterns:
             match = re.search(pattern, html)
             if match:
-                video_url = match.group(1).replace('\\/', '/')
+                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
                 if video_url.startswith('//'):
                     video_url = 'https:' + video_url
                 break
@@ -321,7 +355,7 @@ async def _download_tiktok_video(url):
         if not video_url:
             match = re.search(r'"video":{"videoUrl":{"urlList":\["([^"]+)"', html)
             if match:
-                video_url = match.group(1).replace('\\/', '/')
+                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
 
         if video_url:
             vr = requests.get(video_url, headers=headers, timeout=30)
@@ -427,14 +461,14 @@ def run_web():
 async def sleep_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(True)
-    await e.edit('💤 Автоответчик **ВКЛЮЧЕН**.')
+    await respond(e, '💤 Автоответчик **ВКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!wake$', func=owner_filter))
 async def wake_cmd(e):
     if check_cover(e): return
     state.toggle_auto_reply(False)
-    await e.edit('☀️ Автоответчик **ВЫКЛЮЧЕН**.')
+    await respond(e, '☀️ Автоответчик **ВЫКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!setreply(?:\s+(@\w+))?(?:\s+(.+))?', func=owner_filter))
@@ -444,15 +478,15 @@ async def setreply_cmd(e):
     target, text = g.group(1), g.group(2)
     if target and target.lower() == '@default':
         db.set_default_reply(text or '')
-        await e.edit(f"✅ Дефолтный ответ установлен:\n_{text or 'пусто'}_")
+        await respond(e, f"✅ Дефолтный ответ установлен:\n_{text or 'пусто'}_")
     elif target:
         db.set_reply_text(target.lstrip('@'), text or '')
-        await e.edit(f"✅ Ответ для {target} установлен:\n_{text or 'пусто'}_")
+        await respond(e, f"✅ Ответ для {target} установлен:\n_{text or 'пусто'}_")
     elif text:
         state.set_auto_reply_text(text)
-        await e.edit(f"✅ Текст автоответчика:\n_{text}_")
+        await respond(e, f"✅ Текст автоответчика:\n_{text}_")
     else:
-        await e.edit("ℹ️ `!setreply @username текст` или `!setreply default текст`")
+        await respond(e, "ℹ️ `!setreply @username текст` или `!setreply default текст`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!status$', func=owner_filter))
@@ -462,7 +496,7 @@ async def status_cmd(e):
     dialogs = await client.get_dialogs()
     s = db.all_stats()
     afk_status = f"✅ {state.afk_reason or 'без причины'}" if state.afk_start_time else "❌"
-    await e.edit(
+    await respond(e, 
         f"📊 **Статус UserBot**\n\n"
         f"👤 {me.first_name} {me.last_name or ''}\n"
         f"💬 Чатов: `{len(dialogs)}`\n"
@@ -490,7 +524,7 @@ async def time_cmd(e):
     now = datetime.datetime.now()
     utc = datetime.datetime.utcnow()
     week_days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-    await e.edit(
+    await respond(e, 
         f"🕐 **Время и дата**\n\n"
         f"🏠 Локальное: `{now.strftime('%H:%M:%S')}`\n"
         f"🌍 UTC: `{utc.strftime('%H:%M:%S')}`\n"
@@ -503,10 +537,10 @@ async def time_cmd(e):
 async def ping_cmd(e):
     if check_cover(e): return
     t0 = time.monotonic()
-    await e.edit("🏓 ...")
+    await respond(e, "🏓 ...")
     ms = (time.monotonic() - t0) * 1000
     q = "🟢 Отлично" if ms < 150 else "🟡 Нормально" if ms < 400 else "🔴 Высокая"
-    await e.edit(f"🏓 **Понг!**\n⚡ Задержка: `{ms:.1f} мс`\n📶 Качество: {q}")
+    await respond(e, f"🏓 **Понг!**\n⚡ Задержка: `{ms:.1f} мс`\n📶 Качество: {q}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!id$', func=owner_filter))
@@ -525,7 +559,7 @@ async def id_cmd(e):
     else:
         me = await client.get_me()
         lines.append(f"👤 **Мой ID:** `{me.id}`")
-    await e.edit("\n".join(lines))
+    await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!info$', func=owner_filter))
@@ -533,7 +567,7 @@ async def info_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
     dialogs = await client.get_dialogs()
-    await e.edit(
+    await respond(e, 
         f"🚀 **UserBot Info**\n\n"
         f"👤 {me.first_name} {me.last_name or ''}\n"
         f"🆔 ID: `{me.id}`\n"
@@ -548,7 +582,7 @@ async def info_cmd(e):
 @client.on(events.NewMessage(pattern=r'!restart$', func=owner_filter))
 async def restart_cmd(e):
     if check_cover(e): return
-    await e.edit('🔄 Перезагрузка...')
+    await respond(e, '🔄 Перезагрузка...')
     await asyncio.sleep(2)
     await client.disconnect()
     os._exit(0)
@@ -558,11 +592,11 @@ async def ghost_cmd(e):
     if check_cover(e): return
     state.toggle_ghost()
     if state.ghost_mode:
-        await e.edit("👻 **Ghost-режим ВКЛЮЧЁН** — команды удаляются мгновенно")
+        await respond(e, "👻 **Ghost-режим ВКЛЮЧЁН** — команды удаляются мгновенно")
         await asyncio.sleep(2)
         await e.delete()
     else:
-        await e.edit("👁 **Ghost-режим ВЫКЛЮЧЕН**")
+        await respond(e, "👁 **Ghost-режим ВЫКЛЮЧЕН**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!cover(?:\s+(off|on))?$', func=owner_filter))
@@ -570,10 +604,10 @@ async def cover_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_cover(False)
-        await e.edit("🛡️ **Cover-режим ВЫКЛЮЧЕН** — команды снова работают.")
+        await respond(e, "🛡️ **Cover-режим ВЫКЛЮЧЕН** — команды снова работают.")
     else:
         state.set_cover(True)
-        await e.edit("🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `!cover off`, игнорируются.")
+        await respond(e, "🛡️ **Cover-режим ВКЛЮЧЁН** — все команды, кроме `!cover off`, игнорируются.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!silent\s*(on|off)?$', func=owner_filter))
@@ -581,10 +615,10 @@ async def silent_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_silent(False)
-        await e.edit("🔇 **Silent-режим ВЫКЛЮЧЕН** — ответы снова отправляются.")
+        await respond(e, "🔇 **Silent-режим ВЫКЛЮЧЕН** — ответы снова отправляются.")
     else:
         state.set_silent(True)
-        await e.edit("🔇 **Silent-режим ВКЛЮЧЁН** — бот молчит в ЛС.")
+        await respond(e, "🔇 **Silent-режим ВКЛЮЧЁН** — бот молчит в ЛС.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!shadow(?:\s+(\d+))?$', func=owner_filter))
@@ -593,13 +627,13 @@ async def shadow_cmd(e):
     if delay:
         d = int(delay)
         state.set_shadow(True, max(1, d))
-        await e.edit(f"👤 **Shadow-режим ВКЛЮЧЁН** — удаление через {max(1, d)} сек.")
+        await respond(e, f"👤 **Shadow-режим ВКЛЮЧЁН** — удаление через {max(1, d)} сек.")
     elif state.shadow_enabled:
         state.set_shadow(False)
-        await e.edit("👤 **Shadow-режим ВЫКЛЮЧЕН** — автодудаление отключено.")
+        await respond(e, "👤 **Shadow-режим ВЫКЛЮЧЕН** — автодудаление отключено.")
     else:
         state.set_shadow(True)
-        await e.edit("👤 **Shadow-режим ВКЛЮЧЁН** — удаление через 5 сек.")
+        await respond(e, "👤 **Shadow-режим ВКЛЮЧЁН** — удаление через 5 сек.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!lock(?:\s+(on|off))?$', func=owner_filter))
@@ -607,10 +641,10 @@ async def lock_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_lock(False)
-        await e.edit("🔒 **Lock-режим ВЫКЛЮЧЕН** — ЛС от всех открыты.")
+        await respond(e, "🔒 **Lock-режим ВЫКЛЮЧЕН** — ЛС от всех открыты.")
     else:
         state.set_lock(True)
-        await e.edit("🔒 **Lock-режим ВКЛЮЧЁН** — бот отвечает только контактам.")
+        await respond(e, "🔒 **Lock-режим ВКЛЮЧЁН** — бот отвечает только контактам.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!mute(?:\s+(on|off))?$', func=owner_filter))
@@ -618,10 +652,10 @@ async def mute_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_mute(False)
-        await e.edit("🔇 **Mute-режим ВЫКЛЮЧЕН** — ЛС принимаются.")
+        await respond(e, "🔇 **Mute-режим ВЫКЛЮЧЕН** — ЛС принимаются.")
     else:
         state.set_mute(True)
-        await e.edit("🔇 **Mute-режим ВКЛЮЧЁН** — все ЛС игнорируются.")
+        await respond(e, "🔇 **Mute-режим ВКЛЮЧЁН** — все ЛС игнорируются.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!typing(?:\s+(on|off))?$', func=owner_filter))
@@ -630,10 +664,10 @@ async def typing_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_typing(False)
-        await e.edit("⌨️ **Тайпинг ВЫКЛЮЧЕН** — индикатор печати не показывается.")
+        await respond(e, "⌨️ **Тайпинг ВЫКЛЮЧЕН** — индикатор печати не показывается.")
     else:
         state.set_typing(True)
-        await e.edit("⌨️ **Тайпинг ВКЛЮЧЁН** — перед ответом показывается «печатает...».")
+        await respond(e, "⌨️ **Тайпинг ВКЛЮЧЁН** — перед ответом показывается «печатает...».")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!autodel(?:\s+(on|off))?(?:\s+(\d+))?$', func=owner_filter))
@@ -643,11 +677,11 @@ async def autodel_cmd(e):
     delay_str = e.pattern_match.group(2)
     if arg == 'off':
         state.set_autodel(False)
-        await e.edit("🗑️ **Автоудаление ВЫКЛЮЧЕНО** — сообщения не удаляются.")
+        await respond(e, "🗑️ **Автоудаление ВЫКЛЮЧЕНО** — сообщения не удаляются.")
     else:
         d = int(delay_str) if delay_str else 10
         state.set_autodel(True, max(3, d))
-        await e.edit(f"🗑️ **Автоудаление ВКЛЮЧЕНО** — удаление через {max(3, d)} сек.")
+        await respond(e, f"🗑️ **Автоудаление ВКЛЮЧЕНО** — удаление через {max(3, d)} сек.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!delay\s+(\d+)', func=owner_filter))
@@ -656,9 +690,9 @@ async def delay_cmd(e):
     sec = int(e.pattern_match.group(1))
     state.set_reply_delay(min(sec, 30))
     if state.reply_delay > 0:
-        await e.edit(f"⏳ **Задержка ответа: {state.reply_delay} сек.**")
+        await respond(e, f"⏳ **Задержка ответа: {state.reply_delay} сек.**")
     else:
-        await e.edit("⏳ **Задержка ответа ВЫКЛЮЧЕНА.**")
+        await respond(e, "⏳ **Задержка ответа ВЫКЛЮЧЕНА.**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!readreceipt(?:\s+(on|off))?$', func=owner_filter))
@@ -667,13 +701,13 @@ async def readreceipt_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_readreceipt(False)
-        await e.edit("👁️ **Прочтение ВЫКЛЮЧЕНО** — сообщения остаются непрочитанными.")
+        await respond(e, "👁️ **Прочтение ВЫКЛЮЧЕНО** — сообщения остаются непрочитанными.")
     else:
         state.set_readreceipt(True)
-        await e.edit("👁️ **Прочтение ВКЛЮЧЕНО** — сообщения отмечаются прочитанными.")
+        await respond(e, "👁️ **Прочтение ВКЛЮЧЕНО** — сообщения отмечаются прочитанными.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!sudo(?:\s+(on|off)\s+(\S+))?$', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!sudo(?:\s+(on|off)\s+(\S+))?\s*$', func=owner_filter))
 async def sudo_cmd(e):
     if check_cover(e): return
     g = e.pattern_match
@@ -682,7 +716,7 @@ async def sudo_cmd(e):
     if not action:
         if state.sudo_users:
             lines = ["👑 **Sudo-пользователи:**\n"]
-            for uid in state.sudo_users:
+            for uid in list(state.sudo_users):
                 try:
                     ent = await client.get_entity(uid)
                     name = getattr(ent, 'first_name', '') or str(uid)
@@ -690,27 +724,24 @@ async def sudo_cmd(e):
                     lines.append(f"• {name}{uname} (`{uid}`)")
                 except Exception:
                     lines.append(f"• `{uid}`")
-            await e.edit("\n".join(lines))
+            await respond(e, "\n".join(lines))
         else:
-            await e.edit("👑 **Sudo-пользователи отсутствуют.**")
+            await respond(e, "👑 **Sudo-пользователи отсутствуют.**")
         db.bump_stat('cmds')
         return
+    try:
+        ent = await client.get_entity(target)
+    except Exception as ex:
+        await respond(e, f"❌ Пользователь {target} не найден: {ex}")
+        db.bump_stat('cmds')
+        return
+    name = getattr(ent, 'first_name', '') or str(ent.id)
     if action == 'on':
-        try:
-            ent = await client.get_entity(target.lstrip('@'))
-            state.add_sudo(ent.id)
-            name = getattr(ent, 'first_name', '') or str(ent.id)
-            await e.edit(f"👑 **{name}** добавлен в sudo.")
-        except Exception as ex:
-            await e.edit(f"❌ Пользователь {target} не найден: {ex}")
+        state.add_sudo(ent.id)
+        await respond(e, f"👑 **{name}** добавлен в sudo.")
     else:
-        try:
-            ent = await client.get_entity(target.lstrip('@'))
-            state.remove_sudo(ent.id)
-            name = getattr(ent, 'first_name', '') or str(ent.id)
-            await e.edit(f"👑 **{name}** удалён из sudo.")
-        except Exception as ex:
-            await e.edit(f"❌ Пользователь {target} не найден: {ex}")
+        state.remove_sudo(ent.id)
+        await respond(e, f"👑 **{name}** удалён из sudo.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!online$', func=owner_filter))
@@ -718,9 +749,9 @@ async def online_cmd(e):
     if check_cover(e): return
     try:
         await client(UpdateStatusRequest(offline=False))
-        await e.edit("🟢 Статус: **Онлайн**")
+        await respond(e, "🟢 Статус: **Онлайн**")
     except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+        await respond(e, f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!offline$', func=owner_filter))
@@ -728,15 +759,15 @@ async def offline_cmd(e):
     if check_cover(e): return
     try:
         await client(UpdateStatusRequest(offline=True))
-        await e.edit("🔴 Статус: **Недавно был(а)**")
+        await respond(e, "🔴 Статус: **Недавно был(а)**")
     except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+        await respond(e, f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!status_reset$', func=owner_filter))
 async def status_reset_cmd(e):
     state.reset_stealth()
-    await e.edit("🔄 **Все стелс-режимы сброшены**: cover, silent, shadow, lock, mute — выключены.")
+    await respond(e, "🔄 **Все стелс-режимы сброшены**: cover, silent, shadow, lock, mute — выключены.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!me$', func=owner_filter))
@@ -744,7 +775,7 @@ async def me_cmd(e):
     if check_cover(e): return
     me = await client.get_me()
     photos = await client.get_profile_photos(me.id, limit=1)
-    await e.edit(
+    await respond(e, 
         f"👤 **Мой профиль**\n\n"
         f"📛 {me.first_name} {me.last_name or ''}\n"
         f"🆔 `{me.id}`\n"
@@ -769,7 +800,7 @@ async def avatar_cmd(e):
         await e.reply(file=photos[0])
         await e.delete()
     else:
-        await e.edit("❌ Аватарка не найдена")
+        await respond(e, "❌ Аватарка не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!name (.+)', func=owner_filter))
@@ -777,7 +808,7 @@ async def name_cmd(e):
     if check_cover(e): return
     n = e.pattern_match.group(1).strip()
     await client.edit_profile(first_name=n)
-    await e.edit(f"✅ Имя → **{n}**")
+    await respond(e, f"✅ Имя → **{n}**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!lastname(?:\s+(.+))?$', func=owner_filter))
@@ -785,7 +816,7 @@ async def lastname_cmd(e):
     if check_cover(e): return
     n = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(last_name=n)
-    await e.edit(f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
+    await respond(e, f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!bio(?:\s+(.+))?$', func=owner_filter))
@@ -793,7 +824,7 @@ async def bio_cmd(e):
     if check_cover(e): return
     t = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(about=t)
-    await e.edit(f"✅ Био → _{t}_" if t else "✅ Био очищено")
+    await respond(e, f"✅ Био → _{t}_" if t else "✅ Био очищено")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!whois (.+)', func=owner_filter))
@@ -807,7 +838,7 @@ async def whois_cmd(e):
         uname = f"@{ent.username}" if getattr(ent, 'username', None) else "нет"
         bot_ = "✅" if getattr(ent, 'bot', False) else "❌"
         ver = "✅" if getattr(ent, 'verified', False) else "❌"
-        await e.edit(
+        await respond(e, 
             f"🔍 **Информация о пользователе**\n\n"
             f"📛 Имя: **{name}**\n"
             f"🆔 ID: `{ent.id}`\n"
@@ -816,7 +847,7 @@ async def whois_cmd(e):
             f"✔️ Verified: {ver}"
         )
     except Exception as ex:
-        await e.edit(f"❌ Не найден: {ex}")
+        await respond(e, f"❌ Не найден: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!username_check (.+)', func=owner_filter))
@@ -826,9 +857,9 @@ async def username_check_cmd(e):
     try:
         ent = await client.get_entity(uname)
         name = getattr(ent, 'first_name', None) or getattr(ent, 'title', '?')
-        await e.edit(f"🔍 @{uname}\n✅ **Занят**\n👤 {name}\n🆔 `{ent.id}`")
+        await respond(e, f"🔍 @{uname}\n✅ **Занят**\n👤 {name}\n🆔 `{ent.id}`")
     except Exception:
-        await e.edit(f"🔍 @{uname}\n✅ **Свободен**")
+        await respond(e, f"🔍 @{uname}\n✅ **Свободен**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!dice$', func=owner_filter))
@@ -879,7 +910,7 @@ async def coin_cmd(e):
     sides = ["Орёл 🦅", "Решка 💰"]
     r = random.choice(sides)
     flips = random.randint(3, 9)
-    await e.edit(f"🪙 Монета вращается {flips} раз...\n\nРезультат: **{r}**")
+    await respond(e, f"🪙 Монета вращается {flips} раз...\n\nРезультат: **{r}**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=owner_filter))
@@ -889,11 +920,11 @@ async def rand_cmd(e):
     a, b = g.group(1), g.group(2)
     if a and b:
         lo, hi = sorted([int(a), int(b)])
-        await e.edit(f"🎲 `{lo}` … `{hi}` → **{random.randint(lo, hi)}**")
+        await respond(e, f"🎲 `{lo}` … `{hi}` → **{random.randint(lo, hi)}**")
     elif a:
-        await e.edit(f"🎲 `1` … `{a}` → **{random.randint(1, int(a))}**")
+        await respond(e, f"🎲 `1` … `{a}` → **{random.randint(1, int(a))}**")
     else:
-        await e.edit(f"🎲 **{random.randint(1, 100)}**")
+        await respond(e, f"🎲 **{random.randint(1, 100)}**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!8ball(?:\s+(.+))?$', func=owner_filter))
@@ -938,7 +969,7 @@ async def eightball_cmd(e):
     }
     question = (e.pattern_match.group(1) or '').strip()
     spin = ["🎱", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🎱"]
-    msg = await e.edit("🎱 Шар вращается...")
+    msg = await respond(e, "🎱 Шар вращается...")
     for frame in spin:
         await msg.edit(f"{frame} Шар вращается...")
         await asyncio.sleep(0.15)
@@ -969,7 +1000,7 @@ async def rps_cmd(e):
     WIN = {'🪨 Камень': '✂️ Ножницы', '✂️ Ножницы': '📄 Бумага', '📄 Бумага': '🪨 Камень'}
     arg = (e.pattern_match.group(1) or '').lower().strip()
     if not arg or arg not in MAP:
-        await e.edit("✊✌️🖐 `!rps камень` / `ножницы` / `бумага` (или `к`!`н`!`б`)")
+        await respond(e, "✊✌️🖐 `!rps камень` / `ножницы` / `бумага` (или `к`!`н`!`б`)")
         return
     uc, bc = MAP[arg], random.choice(BOT)
     if uc == bc:
@@ -978,14 +1009,14 @@ async def rps_cmd(e):
         res = "🏆 **Ты победил!**"
     else:
         res = "💀 **Бот победил!**"
-    await e.edit(f"✊✌️🖐 **КНБ**\n\n👤 Ты: {uc}\n🤖 Бот: {bc}\n\n{res}")
+    await respond(e, f"✊✌️🖐 **КНБ**\n\n👤 Ты: {uc}\n🤖 Бот: {bc}\n\n{res}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!slot$', func=owner_filter))
 async def slot_cmd(e):
     if check_cover(e): return
     SYM = ['🍒', '🍋', '🍊', '🍇', '🍉', '⭐', '💎', '7️⃣', '🔔', '🍀']
-    msg = await e.edit("🎰 [ ▓ | ▓ | ▓ ]")
+    msg = await respond(e, "🎰 [ ▓ | ▓ | ▓ ]")
     for _ in range(4):
         s = [random.choice(SYM) for _ in range(3)]
         await msg.edit(f"🎰 [ {s[0]} | {s[1]} | {s[2]} ]")
@@ -1014,7 +1045,7 @@ async def lucky_cmd(e):
         (0, 9): "💀 Сиди дома и не высовывайся!",
     }
     msg = next(v for (a, b), v in tips.items() if a <= pct <= b)
-    await e.edit(f"🔮 **Индекс удачи**\n\n[{bar}] **{pct}%**\n\n{msg}")
+    await respond(e, f"🔮 **Индекс удачи**\n\n[{bar}] **{pct}%**\n\n{msg}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!choose (.+)', func=owner_filter))
@@ -1023,11 +1054,11 @@ async def choose_cmd(e):
     raw = e.pattern_match.group(1)
     opts = [o.strip() for o in re.split(r'[,|/]', raw) if o.strip()]
     if len(opts) < 2:
-        await e.edit("ℹ️ Перечисли варианты через запятую: `!choose пицца, суши, бургер`")
+        await respond(e, "ℹ️ Перечисли варианты через запятую: `!choose пицца, суши, бургер`")
         return
     winner = random.choice(opts)
     listed = "\n".join(f"{'➡️' if o == winner else '  •'} {o}" for o in opts)
-    await e.edit(f"🤔 **Выбираю из {len(opts)} вариантов...**\n\n{listed}\n\n✅ **Выбор: {winner}**")
+    await respond(e, f"🤔 **Выбираю из {len(opts)} вариантов...**\n\n{listed}\n\n✅ **Выбор: {winner}**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!quiz$', func=owner_filter))
@@ -1047,7 +1078,7 @@ async def quiz_cmd(e):
     letters = ['A', 'B', 'C', 'D']
     opts_text = "\n".join(f"{letters[i]}. {o}" for i, o in enumerate(opts))
     correct = f"{letters[ans_idx]}. {opts[ans_idx]}"
-    await e.edit(
+    await respond(e, 
         f"🧠 **Вопрос:**\n_{q}_\n\n{opts_text}\n\n"
         f"||✅ Ответ: **{correct}**||"
     )
@@ -1132,9 +1163,9 @@ async def calc_cmd(e):
     expr = e.pattern_match.group(1).strip()
     r = await safe_eval(expr)
     if r is not None:
-        await e.edit(f"🧮 `{expr}` = **{r}**")
+        await respond(e, f"🧮 `{expr}` = **{r}**")
     else:
-        await e.edit("❌ Ошибка выражения. Разрешены: `+ - * / % sqrt sin cos tan log abs pow pi e factorial ceil floor round`")
+        await respond(e, "❌ Ошибка выражения. Разрешены: `+ - * / % sqrt sin cos tan log abs pow pi e factorial ceil floor round`")
     db.bump_stat('cmds')
 
 async def send_reminder(chat_id, msg_text, delay):
@@ -1149,7 +1180,7 @@ async def remind_cmd(e):
     if check_cover(e): return
     delay = int(e.pattern_match.group(1))
     text = e.pattern_match.group(2).strip()
-    await e.edit(f"⏰ Напоминание через **{fmt_time(delay)}**\n📝 _{text}_")
+    await respond(e, f"⏰ Напоминание через **{fmt_time(delay)}**\n📝 _{text}_")
     asyncio.create_task(send_reminder(e.chat_id, text, delay))
     db.bump_stat('cmds')
 
@@ -1158,7 +1189,7 @@ async def search_cmd(e):
     if check_cover(e): return
     q = e.pattern_match.group(1).strip()
     enc = q.replace(' ', '+')
-    await e.edit(
+    await respond(e, 
         f"🔍 **{q}**\n\n"
         f"• [Google](https://www.google.com/search?q={enc})\n"
         f"• [DuckDuckGo](https://duckduckgo.com/?q={enc})\n"
@@ -1171,18 +1202,18 @@ async def search_cmd(e):
 async def shorten_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
-    await e.edit("⏳ Сокращаю...")
+    await respond(e, "⏳ Сокращаю...")
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(f"https://tinyurl.com/api-create.php?url={url}",
                              timeout=aiohttp.ClientTimeout(total=10)) as r:
                 short = await r.text()
         if short.startswith('http'):
-            await e.edit(f"✂️ **Оригинал:** `{url[:55]}{'…' if len(url) > 55 else ''}`\n🔗 **Короткая:** {short.strip()}")
+            await respond(e, f"✂️ **Оригинал:** `{url[:55]}{'…' if len(url) > 55 else ''}`\n🔗 **Короткая:** {short.strip()}")
         else:
             raise Exception()
     except Exception:
-        await e.edit("❌ Ошибка. Проверь URL.")
+        await respond(e, "❌ Ошибка. Проверь URL.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!weather (.+)', func=owner_filter))
@@ -1190,7 +1221,7 @@ async def weather_cmd(e):
     if check_cover(e): return
     city = e.pattern_match.group(1).strip()
     enc = city.replace(' ', '+')
-    await e.edit(
+    await respond(e, 
         f"🌤️ **Погода: {city}**\n\n"
         f"• [wttr.in](https://wttr.in/{enc})\n"
         f"• [OpenWeatherMap](https://openweathermap.org/find?q={enc})\n"
@@ -1203,7 +1234,7 @@ async def translate_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
     enc = text.replace(' ', '%20')
-    await e.edit(
+    await respond(e, 
         f"🌐 **Перевод:** _{text}_\n\n"
         f"• [RU→EN](https://translate.google.com/?sl=ru&tl=en&text={enc})\n"
         f"• [EN→RU](https://translate.google.com/?sl=en&tl=ru&text={enc})\n"
@@ -1218,20 +1249,20 @@ async def base64_cmd(e):
     try:
         if mode == 'encode':
             res = base64.b64encode(text.encode()).decode()
-            await e.edit(f"🔐 **Base64 encode:**\n`{res}`")
+            await respond(e, f"🔐 **Base64 encode:**\n`{res}`")
         else:
             res = base64.b64decode(text.encode()).decode()
-            await e.edit(f"🔓 **Base64 decode:**\n`{res}`")
+            await respond(e, f"🔓 **Base64 decode:**\n`{res}`")
     except Exception as ex:
         logger.error(f"base64 error: {ex}")
-        await e.edit("❌ Ошибка. Проверь данные.")
+        await respond(e, "❌ Ошибка. Проверь данные.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!hash (.+)', func=owner_filter))
 async def hash_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().encode()
-    await e.edit(
+    await respond(e, 
         f"#️⃣ **Хэши**\n\n"
         f"MD5:    `{hashlib.md5(text).hexdigest()}`\n"
         f"SHA1:   `{hashlib.sha1(text).hexdigest()}`\n"
@@ -1244,7 +1275,7 @@ async def hash_cmd(e):
 async def morse_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip()
-    await e.edit(f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
+    await respond(e, f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', func=owner_filter))
@@ -1252,7 +1283,7 @@ async def caesar_cmd(e):
     if check_cover(e): return
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
     res = caesar(text, shift, dec=(mode == 'decode'))
-    await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
+    await respond(e, f"{'🔒' if mode == 'encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', func=owner_filter))
@@ -1260,7 +1291,7 @@ async def vigenere_cmd(e):
     if check_cover(e): return
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
     res = vigenere(text, key, dec=(mode == 'decode'))
-    await e.edit(f"{'🔒' if mode == 'encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
+    await respond(e, f"{'🔒' if mode == 'encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!password(?:\s+(\d+))?(?:\s+(simple))?$', func=owner_filter))
@@ -1270,14 +1301,14 @@ async def password_cmd(e):
     sym = not e.pattern_match.group(2)
     pwd = gen_pwd(length, sym)
     s = "🔴 Слабый" if length < 8 else "🟡 Средний" if length < 12 else "🟢 Сильный" if length < 20 else "💎 Очень сильный"
-    await e.edit(f"🔑 **Пароль ({length} симв.)**\n\n`{pwd}`\n\nСила: {s}\nСимволы: {'✅' if sym else '❌'}")
+    await respond(e, f"🔑 **Пароль ({length} симв.)**\n\n`{pwd}`\n\nСила: {s}\nСимволы: {'✅' if sym else '❌'}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!qr (.+)', func=owner_filter))
 async def qr_cmd(e):
     if check_cover(e): return
     text = e.pattern_match.group(1).strip().replace(' ', '+')
-    await e.edit(
+    await respond(e, 
         f"📱 **QR-код**\n\n"
         f"🔗 [Открыть изображение](https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={text})"
     )
@@ -1288,7 +1319,7 @@ async def uuid_cmd(e):
     if check_cover(e): return
     ids = [str(uuid.uuid4()) for _ in range(5)]
     out = "\n".join(f"`{u}`" for u in ids)
-    await e.edit(f"🆔 **Случайные UUID v4:**\n\n{out}")
+    await respond(e, f"🆔 **Случайные UUID v4:**\n\n{out}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=owner_filter))
@@ -1317,7 +1348,7 @@ async def color_cmd(e):
             h_val = 60 * ((bf - rf) / (mx - mn) + 2)
         else:
             h_val = 60 * ((rf - gf) / (mx - mn) + 4)
-    await e.edit(
+    await respond(e, 
         f"🎨 **Цвет**\n\n"
         f"HEX: `{hex_val}`\n"
         f"RGB: `rgb({r}, {g}, {b})`\n"
@@ -1332,7 +1363,7 @@ async def ascii_cmd(e):
     text = e.pattern_match.group(1).strip()
     codes = ' '.join(str(ord(c)) for c in text)
     back = ''.join(chr(int(x)) for x in codes.split())
-    await e.edit(f"🔢 **ASCII коды:**\n_{text}_\n\n`{codes}`\n\nОбратно: `{back}`")
+    await respond(e, f"🔢 **ASCII коды:**\n_{text}_\n\n`{codes}`\n\nОбратно: `{back}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=owner_filter))
@@ -1341,14 +1372,14 @@ async def type_cmd(e):
     mode = e.pattern_match.group(1) or 'normal'
     text = e.pattern_match.group(2).strip()
     if mode == 'fast':
-        msg = await e.edit("▌")
+        msg = await respond(e, "▌")
         for i in range(0, len(text), 2):
             chunk = text[:i + 2]
             await msg.edit(chunk + ("▌" if i + 2 < len(text) else ""))
             await asyncio.sleep(0.04)
         await msg.edit(text)
     elif mode == 'slow':
-        msg = await e.edit("▌")
+        msg = await respond(e, "▌")
         shown = ""
         for ch in text:
             shown += ch
@@ -1358,7 +1389,7 @@ async def type_cmd(e):
         await msg.edit(text)
     elif mode == 'matrix':
         CHARS = string.ascii_letters + string.digits + "@#%&"
-        msg = await e.edit("▓" * len(text))
+        msg = await respond(e, "▓" * len(text))
         for step in range(len(text)):
             parts = list(text[:step])
             for _ in range(len(text) - step):
@@ -1368,7 +1399,7 @@ async def type_cmd(e):
         await msg.edit(text)
     elif mode == 'glitch':
         GLITCH = "░▒▓█▄▀■□▪▫"
-        msg = await e.edit("".join(random.choice(GLITCH) for _ in text))
+        msg = await respond(e, "".join(random.choice(GLITCH) for _ in text))
         for _ in range(6):
             glitched = "".join(
                 c if random.random() > 0.4 else random.choice(GLITCH)
@@ -1378,7 +1409,7 @@ async def type_cmd(e):
             await asyncio.sleep(0.12)
         await msg.edit(text)
     else:
-        msg = await e.edit("▌")
+        msg = await respond(e, "▌")
         shown = ""
         for i, ch in enumerate(text):
             shown += ch
@@ -1461,12 +1492,12 @@ async def spam_cmd(e):
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
     MAX_SPAM = 50
     if count < 1 or count > MAX_SPAM:
-        await e.edit(f"❌ Допустимо от 1 до {MAX_SPAM} сообщений.")
+        await respond(e, f"❌ Допустимо от 1 до {MAX_SPAM} сообщений.")
         return
     cooldown_key = f'spam_{e.chat_id}'
     remaining = command_cooldown.get(cooldown_key, 0) - time.time()
     if remaining > 0:
-        await e.edit(f"⏳ Подождите {int(remaining)} сек перед повторным спамом.")
+        await respond(e, f"⏳ Подождите {int(remaining)} сек перед повторным спамом.")
         return
     command_cooldown[cooldown_key] = time.time() + 30
     await e.delete()
@@ -1479,21 +1510,21 @@ async def spam_cmd(e):
 async def forward_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `!forward [chat_id]`")
+        await respond(e, "ℹ️ Ответьте на сообщение: `!forward [chat_id]`")
         return
     try:
         msg = await e.get_reply_message()
         await client.forward_messages(int(e.pattern_match.group(1)), msg)
-        await e.edit(f"✅ Переслано в `{e.pattern_match.group(1)}`")
+        await respond(e, f"✅ Переслано в `{e.pattern_match.group(1)}`")
     except Exception as ex:
-        await e.edit(f"❌ {ex}")
+        await respond(e, f"❌ {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!pin$', func=owner_filter))
 async def pin_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение")
+        await respond(e, "ℹ️ Ответьте на сообщение")
         return
     await (await e.get_reply_message()).pin(notify=False)
     await e.delete()
@@ -1513,7 +1544,7 @@ async def unpin_cmd(e):
 async def copyall_cmd(e):
     if check_cover(e): return
     count, target = int(e.pattern_match.group(1)), int(e.pattern_match.group(2))
-    await e.edit(f"⏳ Копирую {count} сообщений...")
+    await respond(e, f"⏳ Копирую {count} сообщений...")
     msgs = []
     async for m in client.iter_messages(e.chat_id, limit=count):
         msgs.append(m)
@@ -1526,14 +1557,14 @@ async def copyall_cmd(e):
             await asyncio.sleep(0.4)
         except Exception:
             pass
-    await e.edit(f"✅ Скопировано **{copied}/{count}** → `{target}`")
+    await respond(e, f"✅ Скопировано **{copied}/{count}** → `{target}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!react (.+)', func=owner_filter))
 async def react_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на сообщение: `!react 👍`")
+        await respond(e, "ℹ️ Ответьте на сообщение: `!react 👍`")
         return
     emoji = e.pattern_match.group(1).strip()
     try:
@@ -1544,28 +1575,28 @@ async def react_cmd(e):
         ))
         await e.delete()
     except Exception as ex:
-        await e.edit(f"❌ Не удалось поставить реакцию: {ex}")
+        await respond(e, f"❌ Не удалось поставить реакцию: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'^!save$', func=owner_filter))
 async def save_media_cmd(e):
     if check_cover(e): return
     if not e.reply_to_msg_id:
-        await e.edit("ℹ️ Ответьте на фото/видео или используйте `!save key value`")
+        await respond(e, "ℹ️ Ответьте на фото/видео или используйте `!save key value`")
         return
     replied = await e.get_reply_message()
     if not replied.media:
-        await e.edit("❌ В ответном сообщении нет медиа.")
+        await respond(e, "❌ В ответном сообщении нет медиа.")
         return
     os.makedirs(MEDIA_DIR, exist_ok=True)
     try:
         path = await replied.download_media(os.path.join(MEDIA_DIR, ''))
         name = os.path.basename(path) if path else 'unknown'
         db.set_saved(f'_media_{int(time.time())}', name)
-        await e.edit(f"✅ **Сохранено:** `{name}`")
+        await respond(e, f"✅ **Сохранено:** `{name}`")
         logger.info(f"Media saved: {name}")
     except Exception as ex:
-        await e.edit(f"❌ Ошибка сохранения: {ex}")
+        await respond(e, f"❌ Ошибка сохранения: {ex}")
         logger.error(f"Save media error: {ex}")
     db.bump_stat('cmds')
 
@@ -1574,7 +1605,7 @@ async def save_cmd(e):
     if check_cover(e): return
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
     db.set_saved(k, v)
-    await e.edit(f"✅ `{k}` = _{v}_")
+    await respond(e, f"✅ `{k}` = _{v}_")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!get (\S+)', func=owner_filter))
@@ -1582,7 +1613,7 @@ async def get_cmd(e):
     if check_cover(e): return
     k = e.pattern_match.group(1)
     v = db.get_saved(k)
-    await e.edit(f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
+    await respond(e, f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!del (\S+)', func=owner_filter))
@@ -1592,9 +1623,9 @@ async def del_cmd(e):
     v = db.get_saved(k)
     if v is not None:
         db.del_saved(k)
-        await e.edit(f"🗑 Удалено: `{k}`")
+        await respond(e, f"🗑 Удалено: `{k}`")
     else:
-        await e.edit(f"❌ `{k}` не найден")
+        await respond(e, f"❌ `{k}` не найден")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!list$', func=owner_filter))
@@ -1602,11 +1633,11 @@ async def list_cmd(e):
     if check_cover(e): return
     d = db.all_saved()
     if not d:
-        await e.edit("📭 Нет данных")
+        await respond(e, "📭 Нет данных")
         db.bump_stat('cmds')
         return
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v) > 40 else ''}_" for k, v in d.items())
-    await e.edit(f"📦 **Сохранено ({len(d)}):**\n\n{items}")
+    await respond(e, f"📦 **Сохранено ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!find (.+)', func=owner_filter))
@@ -1625,9 +1656,9 @@ async def find_cmd(e):
         for row in notes_results:
             lines.append(f"  • `{row['key']}` — _{row['value'][:40]}{'…' if len(row['value']) > 40 else ''}_")
     if not lines:
-        await e.edit("🔍 **Ничего не найдено**")
+        await respond(e, "🔍 **Ничего не найдено**")
     else:
-        await e.edit(f"🔍 **Результаты поиска: {query}**\n\n" + "\n".join(lines))
+        await respond(e, f"🔍 **Результаты поиска: {query}**\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', func=owner_filter))
@@ -1639,10 +1670,10 @@ async def note_cmd(e):
         r = await e.get_reply_message()
         t = r.text or t
     if not t:
-        await e.edit("ℹ️ `!note <название> <текст>` или ответом")
+        await respond(e, "ℹ️ `!note <название> <текст>` или ответом")
         return
     db.set_note(k, t)
-    await e.edit(f"📝 Заметка сохранена: `{k}`")
+    await respond(e, f"📝 Заметка сохранена: `{k}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!getnote (\S+)', func=owner_filter))
@@ -1651,9 +1682,9 @@ async def getnote_cmd(e):
     k = e.pattern_match.group(1)
     v = db.get_note(k)
     if v is not None:
-        await e.edit(f"📝 **{k}:**\n\n{v}")
+        await respond(e, f"📝 **{k}:**\n\n{v}")
     else:
-        await e.edit(f"❌ Заметка `{k}` не найдена")
+        await respond(e, f"❌ Заметка `{k}` не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!delnote (\S+)', func=owner_filter))
@@ -1663,9 +1694,9 @@ async def delnote_cmd(e):
     v = db.get_note(k)
     if v is not None:
         db.del_note(k)
-        await e.edit(f"🗑 Заметка удалена: `{k}`")
+        await respond(e, f"🗑 Заметка удалена: `{k}`")
     else:
-        await e.edit(f"❌ `{k}` не найдена")
+        await respond(e, f"❌ `{k}` не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!notes$', func=owner_filter))
@@ -1673,11 +1704,11 @@ async def notes_cmd(e):
     if check_cover(e): return
     d = db.all_notes()
     if not d:
-        await e.edit("📭 Нет заметок")
+        await respond(e, "📭 Нет заметок")
         db.bump_stat('cmds')
         return
     items = "\n".join(f"• `{k}` — _{v[:40]}{'…' if len(v) > 40 else ''}_" for k, v in d.items())
-    await e.edit(f"📝 **Заметки ({len(d)}):**\n\n{items}")
+    await respond(e, f"📝 **Заметки ({len(d)}):**\n\n{items}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!todo (.+)', func=owner_filter))
@@ -1686,7 +1717,7 @@ async def todo_add_cmd(e):
     task = e.pattern_match.group(1).strip()
     db.add_todo(task)
     todos = db.get_todos()
-    await e.edit(f"✅ Задача добавлена: _{task}_\n📋 Всего: {len(todos)}")
+    await respond(e, f"✅ Задача добавлена: _{task}_\n📋 Всего: {len(todos)}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!todos$', func=owner_filter))
@@ -1694,7 +1725,7 @@ async def todos_cmd(e):
     if check_cover(e): return
     todos = db.get_todos()
     if not todos:
-        await e.edit("📭 Список задач пуст")
+        await respond(e, "📭 Список задач пуст")
         db.bump_stat('cmds')
         return
     lines = []
@@ -1702,7 +1733,7 @@ async def todos_cmd(e):
         mark = "✅" if t['done'] else "⬜"
         lines.append(f"{mark} {i}. _{t['text']}_")
     done = sum(1 for t in todos if t['done'])
-    await e.edit(f"📋 **Список задач** ({done}/{len(todos)} выполнено):\n\n" + "\n".join(lines))
+    await respond(e, f"📋 **Список задач** ({done}/{len(todos)} выполнено):\n\n" + "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!done (\d+)', func=owner_filter))
@@ -1712,9 +1743,9 @@ async def done_cmd(e):
     todos = db.get_todos()
     if 0 <= idx < len(todos):
         db.update_todo(todos[idx]['id'], done=True)
-        await e.edit(f"✅ Выполнено: _{todos[idx]['text']}_")
+        await respond(e, f"✅ Выполнено: _{todos[idx]['text']}_")
     else:
-        await e.edit(f"❌ Задача #{idx + 1} не найдена")
+        await respond(e, f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!undone (\d+)', func=owner_filter))
@@ -1724,9 +1755,9 @@ async def undone_cmd(e):
     todos = db.get_todos()
     if 0 <= idx < len(todos):
         db.update_todo(todos[idx]['id'], done=False)
-        await e.edit(f"⬜ Снята отметка: _{todos[idx]['text']}_")
+        await respond(e, f"⬜ Снята отметка: _{todos[idx]['text']}_")
     else:
-        await e.edit(f"❌ Задача #{idx + 1} не найдена")
+        await respond(e, f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!deltodo (\d+)', func=owner_filter))
@@ -1736,9 +1767,9 @@ async def deltodo_cmd(e):
     todos = db.get_todos()
     if 0 <= idx < len(todos):
         db.del_todo(todos[idx]['id'])
-        await e.edit(f"🗑 Удалена задача: _{todos[idx]['text']}_")
+        await respond(e, f"🗑 Удалена задача: _{todos[idx]['text']}_")
     else:
-        await e.edit(f"❌ Задача #{idx + 1} не найдена")
+        await respond(e, f"❌ Задача #{idx + 1} не найдена")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!afk(?:\s+(.+))?$', func=owner_filter))
@@ -1747,7 +1778,7 @@ async def afk_cmd(e):
     reason = (e.pattern_match.group(1) or '').strip()
     state.set_afk(reason)
     r = f"\n📝 _{reason}_" if reason else ""
-    await e.edit(f"😴 **AFK включён**{r}")
+    await respond(e, f"😴 **AFK включён**{r}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!unafk$', func=owner_filter))
@@ -1755,9 +1786,9 @@ async def unafk_cmd(e):
     if check_cover(e): return
     dur = state.clear_afk()
     if dur is not None:
-        await e.edit(f"☀️ **AFK выключен** | Отсутствовал: _{fmt_time(dur)}_")
+        await respond(e, f"☀️ **AFK выключен** | Отсутствовал: _{fmt_time(dur)}_")
     else:
-        await e.edit("ℹ️ AFK не был включён")
+        await respond(e, "ℹ️ AFK не был включён")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!chatinfo$', func=owner_filter))
@@ -1779,7 +1810,7 @@ async def chatinfo_cmd(e):
     lines.append(f"👥 Тип: `{type(chat).__name__}`")
     if members:
         lines.append(f"👤 Участников: `{members}`")
-    await e.edit("\n".join(lines))
+    await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!members$', func=owner_filter))
@@ -1788,9 +1819,9 @@ async def members_cmd(e):
     try:
         p = await client.get_participants(e.chat_id)
         bots = sum(1 for x in p if x.bot)
-        await e.edit(f"👥 **Участники**\n\nВсего: `{len(p)}`\n👤 Людей: `{len(p) - bots}`\n🤖 Ботов: `{bots}`")
+        await respond(e, f"👥 **Участники**\n\nВсего: `{len(p)}`\n👤 Людей: `{len(p) - bots}`\n🤖 Ботов: `{bots}`")
     except Exception as ex:
-        await e.edit(f"❌ {ex}")
+        await respond(e, f"❌ {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!admins$', func=owner_filter))
@@ -1802,16 +1833,16 @@ async def admins_cmd(e):
         for a in admins[:25]:
             name = f"{a.first_name or ''} {a.last_name or ''}".strip()
             lines.append(f"• {name} — {'@' + a.username if a.username else '`' + str(a.id) + '`'}")
-        await e.edit("\n".join(lines))
+        await respond(e, "\n".join(lines))
     except Exception as ex:
-        await e.edit(f"❌ {ex}")
+        await respond(e, f"❌ {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!top(?:\s+(\d+))?$', func=owner_filter))
 async def top_cmd(e):
     if check_cover(e): return
     limit = int(e.pattern_match.group(1) or 200)
-    await e.edit("⏳ Анализирую...")
+    await respond(e, "⏳ Анализирую...")
     cnt, names = defaultdict(int), {}
     async for msg in client.iter_messages(e.chat_id, limit=limit):
         if msg.sender_id:
@@ -1826,7 +1857,7 @@ async def top_cmd(e):
     lines = [f"🏆 **Топ активных** (из {limit} сообщ.):\n"]
     for i, (uid, c) in enumerate(top):
         lines.append(f"{medals[i]} {names.get(uid, uid)} — `{c}` сообщ.")
-    await e.edit("\n".join(lines))
+    await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!bots$', func=owner_filter))
@@ -1837,9 +1868,9 @@ async def bots_cmd(e):
         lines = [f"🤖 **Боты в чате ({len(bots)}):**\n"]
         for b in bots[:20]:
             lines.append(f"• @{b.username or b.id}")
-        await e.edit("\n".join(lines))
+        await respond(e, "\n".join(lines))
     except Exception as ex:
-        await e.edit(f"❌ {ex}")
+        await respond(e, f"❌ {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!resetdata$', func=owner_filter))
@@ -1853,7 +1884,7 @@ async def resetdata_cmd(e):
     state.afk_reason = ''
     state.sudo_users.clear()
     state._save()
-    await e.edit("🧹 **Все данные сброшены.**")
+    await respond(e, "🧹 **Все данные сброшены.**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=owner_filter))
@@ -1869,7 +1900,7 @@ async def ytshow_cmd(e):
         height = None
 
     async def edit_fn(text):
-        await e.edit(text)
+        await respond(e, text)
 
     await edit_fn(f"⏳ Загружаю ({'авто' if not height else f'{height}p'})...")
     filename = await _run_download(edit_fn, url, mode='video', quality=height, timeout=600)
@@ -1883,7 +1914,7 @@ async def dl_cmd(e):
     url = e.pattern_match.group(1).strip()
 
     async def edit_fn(text):
-        await e.edit(text)
+        await respond(e, text)
 
     await edit_fn("⏳ Загрузка...")
     try:
@@ -1891,7 +1922,7 @@ async def dl_cmd(e):
         if filename:
             await _send_and_clean(edit_fn, e.chat_id, filename)
     except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+        await respond(e, f"❌ Ошибка: {ex}")
         logger.error(f"dl error: {ex}")
     db.bump_stat('cmds')
 
@@ -1907,10 +1938,10 @@ async def playlist_cmd(e):
         start_num = int(g.group(2))
         end_num = int(g.group(3)) if g.group(3) else start_num
 
-    msg = await e.edit("⏳ Получаю информацию о плейлисте...")
+    msg = await respond(e, "⏳ Получаю информацию о плейлисте...")
     try:
         def _get_playlist_info():
-            pl = Playlist(url)
+            pl = Playlist(url, use_po_token=True)
             return pl.title, list(pl.video_urls)
 
         loop = asyncio.get_event_loop()
@@ -1931,7 +1962,7 @@ async def playlist_cmd(e):
         await msg.edit(f"📋 Плейлист: **{title or '?'}** ({len(selected)}/{total} видео)\n⏳ Начинаю загрузку...")
 
         for i, video_url in enumerate(selected, 1):
-            vid_msg = await e.edit(f"⏳ [{i}/{len(selected)}] Загружаю видео {i}...")
+            vid_msg = await respond(e, f"⏳ [{i}/{len(selected)}] Загружаю видео {i}...")
 
             async def edit_vid(text, vid_msg=vid_msg):
                 try:
@@ -1944,9 +1975,9 @@ async def playlist_cmd(e):
                 await _send_and_clean(edit_vid, e.chat_id, filename, f"🎬 [{i}/{len(selected)}]")
                 await asyncio.sleep(2)
 
-        await e.edit(f"✅ **Плейлист загружен!** ({len(selected)}/{total} видео)")
+        await respond(e, f"✅ **Плейлист загружен!** ({len(selected)}/{total} видео)")
     except Exception as ex:
-        await e.edit(f"❌ Ошибка плейлиста: {ex}")
+        await respond(e, f"❌ Ошибка плейлиста: {ex}")
         logger.error(f"playlist error: {ex}")
     db.bump_stat('cmds')
 
@@ -1957,7 +1988,7 @@ async def audio_cmd(e):
     url = e.pattern_match.group(1).strip()
 
     async def edit_fn(text):
-        await e.edit(text)
+        await respond(e, text)
 
     await edit_fn("🎵 Скачиваю аудио...")
     try:
@@ -1965,7 +1996,7 @@ async def audio_cmd(e):
         if filename:
             await _send_and_clean(edit_fn, e.chat_id, filename, f"🎵 Аудио")
     except Exception as ex:
-        await e.edit(f"❌ Ошибка: {ex}")
+        await respond(e, f"❌ Ошибка: {ex}")
         logger.error(f"audio error: {ex}")
     db.bump_stat('cmds')
 
@@ -1977,10 +2008,10 @@ async def sub_cmd(e):
     url = g.group(1).strip()
     lang = (g.group(2) or 'ru').lower()
 
-    msg = await e.edit(f"⏳ Ищу субтитры ({lang})...")
+    msg = await respond(e, f"⏳ Ищу субтитры ({lang})...")
     try:
         def _get_captions():
-            yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+            yt = YouTube(url, use_po_token=True)
             captions = yt.captions
             caption = captions.get(lang)
             if not caption:
@@ -2018,7 +2049,7 @@ async def watch_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'on':
         if _watch_task and not _watch_task.done():
-            await e.edit("⚠️ Мониторинг уже запущен.")
+            await respond(e, "⚠️ Мониторинг уже запущен.")
             return
         db.clear_sessions()
         try:
@@ -2046,12 +2077,12 @@ async def watch_cmd(e):
                 await asyncio.sleep(300)
 
         _watch_task = asyncio.create_task(monitor())
-        await e.edit("👁️ **Мониторинг сессий ВКЛЮЧЁН.** Проверка каждые 5 мин.")
+        await respond(e, "👁️ **Мониторинг сессий ВКЛЮЧЁН.** Проверка каждые 5 мин.")
     else:
         if _watch_task and not _watch_task.done():
             _watch_task.cancel()
             _watch_task = None
-        await e.edit("👁️ **Мониторинг сессий ВЫКЛЮЧЕН.**")
+        await respond(e, "👁️ **Мониторинг сессий ВЫКЛЮЧЕН.**")
     db.bump_stat('cmds')
 
 
@@ -2059,7 +2090,7 @@ async def watch_cmd(e):
 async def check_email_cmd(e):
     if check_cover(e): return
     email = e.pattern_match.group(1).strip().lower()
-    msg = await e.edit(f"🔍 Проверяю {email}...")
+    msg = await respond(e, f"🔍 Проверяю {email}...")
     try:
         headers = {'hibp-api-key': HIBP_API_KEY, 'User-Agent': 'TelegramUserBot/1.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -2095,13 +2126,13 @@ async def protect_cmd(e):
     arg = e.pattern_match.group(1)
     if arg == 'on':
         if _protect_task and not _protect_task.done():
-            await e.edit("⚠️ Защита уже включена.")
+            await respond(e, "⚠️ Защита уже включена.")
             return
         dialogs = await client.get_dialogs(limit=1000)
         db.clear_protected_chats()
         for d in dialogs:
             db.add_protected_chat(d.id)
-        await e.edit(f"🔒 **Защита ВКЛЮЧЕНА.** Отслеживается {len(dialogs)} чатов.")
+        await respond(e, f"🔒 **Защита ВКЛЮЧЕНА.** Отслеживается {len(dialogs)} чатов.")
 
         async def monitor():
             while True:
@@ -2123,7 +2154,7 @@ async def protect_cmd(e):
             _protect_task.cancel()
             _protect_task = None
         db.clear_protected_chats()
-        await e.edit("🔓 **Защита ВЫКЛЮЧЕНА.**")
+        await respond(e, "🔓 **Защита ВЫКЛЮЧЕНА.**")
     db.bump_stat('cmds')
 
 
@@ -2642,11 +2673,11 @@ async def help_cmd(e):
             ]
             lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
             lines.append("💡 Для всех команд: `!help all`")
-            await e.edit("\n".join(lines))
+            await respond(e, "\n".join(lines))
             db.bump_stat('cmds')
             return
         else:
-            await e.edit(f"❌ Команда `{cmd_name}` не найдена.\n💡 `!help cmd <команда>`")
+            await respond(e, f"❌ Команда `{cmd_name}` не найдена.\n💡 `!help cmd <команда>`")
             db.bump_stat('cmds')
             return
 
@@ -2659,7 +2690,7 @@ async def help_cmd(e):
         msg += "\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех категорий: `!help <категория>`"
         if len(msg) > 4096:
             msg = msg[:4080] + "\n\n⚠️ Сообщение обрезано (лимит 4096)"
-        await e.edit(msg)
+        await respond(e, msg)
         db.bump_stat('cmds')
         return
 
@@ -2667,7 +2698,7 @@ async def help_cmd(e):
         cat = arg
         if cat not in HELP_CATS:
             cats = ', '.join(f"`!help {c}`" for c in HELP_CATS)
-            await e.edit(f"❌ Категория `{cat}` не найдена.\n\nДоступные категории:\n{cats}")
+            await respond(e, f"❌ Категория `{cat}` не найдена.\n\nДоступные категории:\n{cats}")
             db.bump_stat('cmds')
             return
         text = HELP_CATS[cat]
@@ -2675,7 +2706,7 @@ async def help_cmd(e):
         if cmds:
             text += "\n\n📋 **Команды для копирования:**\n" + ", ".join(f"`{cmd}`" for cmd in cmds)
         text += "\n\n💡 Для справки по команде: `!help cmd <команда>`\n💡 Для всех команд: `!help all`"
-        await e.edit(text)
+        await respond(e, text)
         db.bump_stat('cmds')
         return
 
@@ -2685,13 +2716,13 @@ async def help_cmd(e):
         lines.append(f"{emoji} `{cat_name.capitalize()}` → `!help {cat_name}`")
     lines.append("\n💡 Для справки по команде: `!help cmd <команда>`")
     lines.append("💡 Для всех команд: `!help all`")
-    await e.edit("\n".join(lines))
+    await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!commands$', func=owner_filter))
 async def commands_cmd(e):
     if check_cover(e): return
-    await e.edit("ℹ️ Используйте `!help all` для списка всех команд с описанием.")
+    await respond(e, "ℹ️ Используйте `!help all` для списка всех команд с описанием.")
     db.bump_stat('cmds')
 
 if __name__ == "__main__":
