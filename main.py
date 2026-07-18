@@ -17,8 +17,7 @@ from threading import Thread
 import aiohttp
 import requests
 from flask import Flask
-from pytubefix import Playlist, YouTube
-from pytubefix.exceptions import BotDetection, LoginRequired, VideoRegionBlocked, VideoUnavailable
+import yt_dlp
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
@@ -248,58 +247,52 @@ def format_bytes(n):
         n /= 1024
     return f"{n:.1f} ТБ"
 
+_YT_DL_OPTS = {
+    'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
+    'quiet': True,
+    'no_warnings': True,
+    'merge_output_format': 'mp4',
+}
 
-_YT_CLIENTS = ['ANDROID_VR', 'ANDROID_TESTSUITE', 'MWEB', 'TV']
 
 async def _download_yt_video(url, quality=None):
     def _dl():
-        last_err = None
-        for client in _YT_CLIENTS:
-            try:
-                yt = YouTube(url, client=client)
-                if quality:
-                    stream = yt.streams.filter(res=f"{quality}p").first()
-                    if not stream:
-                        stream = yt.streams.get_highest_resolution()
-                else:
-                    stream = yt.streams.get_highest_resolution()
-                if stream:
-                    return stream.download(output_path=MEDIA_DIR)
-                last_err = ValueError(f"{client}: нет доступного потока")
-            except BotDetection:
-                logger.warning(f"YouTube {client} detected as bot, trying next...")
-                last_err = BotDetection(f"{client}: заблокирован")
-            except (LoginRequired, VideoRegionBlocked, VideoUnavailable) as ex:
-                logger.warning(f"YouTube {client}: {ex}")
-                last_err = ex
-            except Exception as ex:
-                logger.warning(f"YouTube {client}: {ex}")
-                last_err = ex
-        raise last_err or BotDetection(f"Все клиенты недоступны: {url}")
+        opts = dict(_YT_DL_OPTS)
+        if quality:
+            opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        else:
+            opts['format'] = 'bestvideo+bestaudio/best'
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info.get('requested_downloads'):
+                    return info['requested_downloads'][0]['filepath']
+                return ydl.prepare_filename(info)
+        except yt_dlp.utils.DownloadError as ex:
+            raise ValueError(f"YouTube: {ex}")
+
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
 
 async def _download_yt_audio(url):
     def _dl():
-        last_err = None
-        for client in _YT_CLIENTS:
-            try:
-                yt = YouTube(url, client=client)
-                stream = yt.streams.get_audio_only()
-                if stream:
-                    return stream.download(output_path=MEDIA_DIR)
-                last_err = ValueError(f"{client}: нет аудиопотока")
-            except BotDetection:
-                logger.warning(f"YouTube {client} detected as bot, trying next...")
-                last_err = BotDetection(f"{client}: заблокирован")
-            except (LoginRequired, VideoRegionBlocked, VideoUnavailable) as ex:
-                logger.warning(f"YouTube {client}: {ex}")
-                last_err = ex
-            except Exception as ex:
-                logger.warning(f"YouTube {client}: {ex}")
-                last_err = ex
-        raise last_err or BotDetection(f"Все клиенты недоступны: {url}")
+        opts = dict(_YT_DL_OPTS)
+        opts['format'] = 'bestaudio/best'
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info.get('requested_downloads'):
+                    return info['requested_downloads'][0]['filepath']
+                return ydl.prepare_filename(info)
+        except yt_dlp.utils.DownloadError as ex:
+            raise ValueError(f"YouTube: {ex}")
+
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _dl)
 
@@ -478,10 +471,6 @@ async def _run_download(event_edit_func, url, mode='video', quality=None, timeou
         except ValueError as ex:
             logger.warning(f"Download error: {ex}")
             await event_edit_func(f"❌ {ex}")
-            return None
-        except BotDetection as ex:
-            logger.error(f"YouTube bot detection: {ex}")
-            await event_edit_func("❌ YouTube заблокировал запрос. Попробуй позже или другое видео.")
             return None
         except Exception as ex:
             logger.error(f"Download error: {ex}", exc_info=True)
@@ -2020,8 +2009,25 @@ async def playlist_cmd(e):
     msg = await respond(e, "⏳ Получаю информацию о плейлисте...")
     try:
         def _get_playlist_info():
-            pl = Playlist(url)
-            return pl.title, list(pl.video_urls)
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'force_generic_extractor': False,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', '')
+                entries = info.get('entries', [])
+                video_urls = []
+                for entry in entries:
+                    if entry and entry.get('url'):
+                        video_urls.append(entry['url'])
+                    elif entry and entry.get('webpage_url'):
+                        video_urls.append(entry['webpage_url'])
+                    elif entry and entry.get('id'):
+                        video_urls.append(f'https://youtube.com/watch?v={entry["id"]}')
+                return title, video_urls
 
         loop = asyncio.get_event_loop()
         title, video_urls = await loop.run_in_executor(None, _get_playlist_info)
@@ -2090,17 +2096,45 @@ async def sub_cmd(e):
     msg = await respond(e, f"⏳ Ищу субтитры ({lang})...")
     try:
         def _get_captions():
-            yt = YouTube(url, client='WEB')
-            captions = yt.captions
-            caption = captions.get(lang)
-            if not caption:
-                for code in captions:
-                    if code.startswith(lang):
-                        caption = captions[code]
-                        break
-            if caption:
-                return caption.generate_srt_captions()
-            return None
+            out_dir = os.path.join(MEDIA_DIR, 'subtmp')
+            os.makedirs(out_dir, exist_ok=True)
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'writesubtitles': True,
+                'subtitleslangs': [lang],
+                'subtitlesformat': 'srt',
+                'skip_download': True,
+                'outtmpl': os.path.join(out_dir, '%(id)s'),
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                subs = info.get('subtitles') or info.get('requested_subtitles') or {}
+                if lang not in subs:
+                    for code in subs:
+                        if code.startswith(lang):
+                            lang_found = code
+                            break
+                    else:
+                        return None
+                else:
+                    lang_found = lang
+                sub_data = subs[lang_found]
+                sub_url = None
+                if isinstance(sub_data, list):
+                    for entry in sub_data:
+                        if entry.get('ext') == 'srt' and entry.get('url'):
+                            sub_url = entry['url']
+                            break
+                    if not sub_url and sub_data and sub_data[0].get('url'):
+                        sub_url = sub_data[0]['url']
+                elif isinstance(sub_data, dict):
+                    sub_url = sub_data.get('url')
+                if sub_url:
+                    r = requests.get(sub_url, timeout=30)
+                    r.raise_for_status()
+                    return r.text
+                return None
 
         loop = asyncio.get_event_loop()
         srt_content = await loop.run_in_executor(None, _get_captions)
@@ -2112,7 +2146,10 @@ async def sub_cmd(e):
             await msg.edit(f"📤 Отправляю субтитры ({lang})...")
             await client.send_file(e.chat_id, sub_path, caption=f"📝 Субтитры ({lang})")
             await asyncio.sleep(3)
-            os.remove(sub_path)
+            try:
+                os.remove(sub_path)
+            except OSError:
+                pass
             await msg.edit(f"✅ Субтитры ({lang}) отправлены.")
         else:
             await msg.edit(f"❌ Субтитры ({lang}) не найдены для этого видео.")
