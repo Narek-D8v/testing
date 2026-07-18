@@ -249,7 +249,7 @@ def format_bytes(n):
 
 async def _download_yt_video(url, quality=None):
     def _dl():
-        yt = YouTube(url, use_po_token=True)
+        yt = YouTube(url)
         if quality:
             stream = yt.streams.filter(res=f"{quality}p").first()
             if not stream:
@@ -263,7 +263,7 @@ async def _download_yt_video(url, quality=None):
 
 async def _download_yt_audio(url):
     def _dl():
-        yt = YouTube(url, use_po_token=True)
+        yt = YouTube(url)
         stream = yt.streams.get_audio_only()
         return stream.download(output_path=MEDIA_DIR)
     loop = asyncio.get_event_loop()
@@ -1941,7 +1941,7 @@ async def playlist_cmd(e):
     msg = await respond(e, "⏳ Получаю информацию о плейлисте...")
     try:
         def _get_playlist_info():
-            pl = Playlist(url, use_po_token=True)
+            pl = Playlist(url)
             return pl.title, list(pl.video_urls)
 
         loop = asyncio.get_event_loop()
@@ -2011,7 +2011,7 @@ async def sub_cmd(e):
     msg = await respond(e, f"⏳ Ищу субтитры ({lang})...")
     try:
         def _get_captions():
-            yt = YouTube(url, use_po_token=True)
+            yt = YouTube(url)
             captions = yt.captions
             caption = captions.get(lang)
             if not caption:
