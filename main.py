@@ -254,7 +254,6 @@ _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
     'no_warnings': True,
-    'merge_output_format': 'mp4',
     'cookiefile': 'cookies.txt',
 }
 
@@ -262,10 +261,8 @@ _YT_DL_OPTS = {
 async def _download_yt_video(url, quality=None):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        if quality:
-            opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
-        else:
-            opts['format'] = 'bestvideo+bestaudio/best'
+        target = quality or 720
+        opts['format'] = f'best[height<={target}]'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -283,7 +280,6 @@ async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
         opts['format'] = 'bestaudio'
-        opts.pop('merge_output_format', None)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
