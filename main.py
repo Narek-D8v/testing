@@ -282,12 +282,7 @@ async def _download_yt_video(url, quality=None):
 async def _download_yt_audio(url):
     def _dl():
         opts = dict(_YT_DL_OPTS)
-        opts['format'] = 'bestaudio/best'
-        opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
+        opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
