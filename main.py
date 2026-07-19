@@ -257,7 +257,13 @@ _YT_DL_OPTS = {
     'noplaylist': True,
     'nocheckcertificate': True,
     'cachedir': False,
-    'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+    },
+    'extractor_args': {'youtube': {'player_client': ['android_vr', 'web']}},
 }
 
 _HAS_FFMPEG = False
@@ -278,7 +284,7 @@ async def _download_yt_video(url, quality=None):
                 opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
             opts['merge_output_format'] = 'mp4'
         else:
-            opts['format'] = 'best'
+            opts['format'] = 'best[acodec!=none]'
         try:
             logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
             with yt_dlp.YoutubeDL(opts) as ydl:
