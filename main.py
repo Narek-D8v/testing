@@ -260,6 +260,7 @@ _YT_DL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
+    'extractor_retries': 3,
     'cookiefile': _COOKIES_PATH if os.path.exists(_COOKIES_PATH) else None,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -267,7 +268,6 @@ _YT_DL_OPTS = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
     },
-    'extractor_args': {'youtube': {'player_client': ['android_vr', 'web']}},
 }
 
 _HAS_FFMPEG = False
