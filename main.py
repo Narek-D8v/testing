@@ -297,24 +297,54 @@ def _resolve_yt_path(ydl, info):
     raise ValueError("Файл не найден после загрузки (возможно, проблема с ffmpeg пост-обработкой)")
 
 
+def _pick_format_and_download(url, opts, quality, is_audio):
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+
+    if _HAS_FFMPEG and is_audio:
+        opts['format'] = 'bestaudio/best'
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+    elif _HAS_FFMPEG and not is_audio:
+        opts['format'] = 'bestvideo+bestaudio/best'
+        if quality:
+            opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        opts['merge_output_format'] = 'mp4'
+    else:
+        if is_audio:
+            formats_to_try = ['bestaudio', 'best']
+        else:
+            formats_to_try = ['best', 'bestvideo']
+
+        last_ex = None
+        for fmt in formats_to_try:
+            opts['format'] = fmt
+            try:
+                logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    return _resolve_yt_path(ydl, info)
+            except yt_dlp.utils.DownloadError as ex:
+                last_ex = ex
+                continue
+        raise ValueError(f"YouTube: {last_ex}")
+
+    logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return _resolve_yt_path(ydl, info)
+
+
 async def _download_yt_video(url, quality=None):
     def _dl():
-        os.makedirs(MEDIA_DIR, exist_ok=True)
-        opts = dict(_YT_DL_OPTS)
-        if _HAS_FFMPEG:
-            opts['format'] = 'bestvideo+bestaudio/best'
-            if quality:
-                opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
-            opts['merge_output_format'] = 'mp4'
-        else:
-            opts['format'] = 'best[acodec!=none]'
         try:
-            logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                return _resolve_yt_path(ydl, info)
+            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality, is_audio=False)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
+        except ValueError:
+            raise
         except Exception as ex:
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
@@ -324,23 +354,12 @@ async def _download_yt_video(url, quality=None):
 
 async def _download_yt_audio(url):
     def _dl():
-        os.makedirs(MEDIA_DIR, exist_ok=True)
-        opts = dict(_YT_DL_OPTS)
-        if _HAS_FFMPEG:
-            opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        else:
-            opts['format'] = 'bestaudio'
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                return _resolve_yt_path(ydl, info)
+            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality=None, is_audio=True)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
+        except ValueError:
+            raise
         except Exception as ex:
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
