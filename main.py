@@ -278,8 +278,7 @@ async def _download_yt_video(url, quality=None):
                 opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
             opts['merge_output_format'] = 'mp4'
         else:
-            target = quality or 720
-            opts['format'] = f'best[height<={target}]/best'
+            opts['format'] = 'best'
         try:
             logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
             with yt_dlp.YoutubeDL(opts) as ydl:
