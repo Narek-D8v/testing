@@ -252,8 +252,17 @@ def format_bytes(n):
     return f"{n:.1f} ТБ"
 
 _COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
-if not os.path.exists(_COOKIES_PATH):
-    logger.warning("cookies.txt не найден — age-restricted YouTube видео могут не загружаться")
+_COOKIES_VALID = False
+if os.path.exists(_COOKIES_PATH):
+    with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
+        content = f.read()
+    if '.youtube.com' in content and ('\tTRUE\t' in content or 'cookie' in content.lower()):
+        _COOKIES_VALID = True
+        logger.info(f"cookies.txt: {len(content)} байт, формат OK")
+    else:
+        logger.warning("cookies.txt существует, но похож на неверный формат (нужен Netscape)")
+else:
+    logger.warning("cookies.txt не найден — YouTube может требовать авторизации")
 
 try:
     logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
@@ -265,8 +274,12 @@ _YT_DL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
-    'extractor_retries': 3,
-    'cookiefile': _COOKIES_PATH if os.path.exists(_COOKIES_PATH) else None,
+    'extractor_retries': 5,
+    'fragment_retries': 5,
+    'retry_sleep': lambda n: 5 + n * 3,
+    'throttledratelimit': 100000,
+    'sleep_interval_requests': 2,
+    'cookiefile': _COOKIES_PATH if _COOKIES_VALID else None,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
