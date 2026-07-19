@@ -304,23 +304,26 @@ def _resolve_yt_path(ydl, info):
 
 def _probe_formats(url, opts):
     probe_opts = dict(opts)
-    probe_opts['format'] = None
-    probe_opts['extract_flat'] = False
+    if 'format' in probe_opts:
+        del probe_opts['format']
+    probe_opts['extract_flat'] = True
     probe_opts['skip_download'] = True
     try:
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            formats = info.get('formats') or []
-            logger.info(f"YouTube formats for {info.get('id', '?')}: {len(formats)} total, "
-                        f"title={info.get('title', '?')[:60]}, "
+            logger.info(f"YouTube probe: id={info.get('id', '?')}, "
+                        f"title=\"{info.get('title', '?')[:80]}\", "
                         f"channel={info.get('channel', '?')}, "
-                        f"live={info.get('is_live')}")
-            if not formats:
-                logger.warning(f"Zero formats! extractor={info.get('extractor', '?')}, "
-                              f"webpage_url={info.get('webpage_url', '?')}")
+                        f"live={info.get('is_live')}, "
+                        f"age_limit={info.get('age_limit')}")
+            if not info.get('title'):
+                raise ValueError("YouTube не вернул информацию о видео")
             return info
+    except yt_dlp.utils.DownloadError as ex:
+        logger.error(f"Probe failed (DownloadError): {ex}")
+        return None
     except Exception as ex:
-        logger.error(f"Probe failed: {ex}")
+        logger.warning(f"Probe failed: {ex}")
         return None
 
 
@@ -328,16 +331,13 @@ def _pick_format_and_download(url, opts, quality, is_audio):
     os.makedirs(MEDIA_DIR, exist_ok=True)
 
     if not _HAS_FFMPEG:
-        info = _probe_formats(url, opts)
-        if info:
-            formats = info.get('formats') or []
-            if not formats:
-                raise ValueError(
-                    "YouTube не вернул ни одного формата для этого видео. "
-                    "Возможные причины: видео удалено, недоступно в регионе, "
-                    "требует авторизации или это YouTube Shorts. "
-                    "Попробуйте обновить cookies.txt или другое видео."
-                )
+        probe = _probe_formats(url, opts)
+        if probe is None:
+            raise ValueError(
+                "YouTube видео недоступно для скачивания. Возможные причины: "
+                "видео удалено, youtube заблокировал запрос (устаревший yt-dlp?), "
+                "требуется авторизация или видео недоступно в регионе сервера."
+            )
 
     if _HAS_FFMPEG and is_audio:
         opts['format'] = 'bestaudio/best'
