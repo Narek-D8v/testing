@@ -244,20 +244,23 @@ async def respond(event, text, **kwargs):
 
 
 def format_bytes(n):
+    n = float(n)
     for unit in ('Б', 'КБ', 'МБ', 'ГБ'):
         if abs(n) < 1024:
             return f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} ТБ"
 
+_COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+if not os.path.exists(_COOKIES_PATH):
+    logger.warning("cookies.txt не найден — age-restricted YouTube видео могут не загружаться")
+
 _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
-    'nocheckcertificate': True,
-    'cachedir': False,
-    'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
+    'cookiefile': _COOKIES_PATH if os.path.exists(_COOKIES_PATH) else None,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
@@ -276,8 +279,27 @@ except Exception:
     pass
 
 
+def _resolve_yt_path(ydl, info):
+    filepath = None
+    if info.get('requested_downloads'):
+        filepath = info['requested_downloads'][0].get('filepath')
+    if not filepath or not os.path.exists(filepath or ''):
+        filepath = ydl.prepare_filename(info)
+    if filepath and os.path.exists(filepath):
+        return filepath
+    video_id = info.get('id')
+    if video_id:
+        pattern = os.path.join(MEDIA_DIR, f'{video_id}.*')
+        import glob
+        matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        if matches:
+            return matches[0]
+    raise ValueError("Файл не найден после загрузки (возможно, проблема с ffmpeg пост-обработкой)")
+
+
 async def _download_yt_video(url, quality=None):
     def _dl():
+        os.makedirs(MEDIA_DIR, exist_ok=True)
         opts = dict(_YT_DL_OPTS)
         if _HAS_FFMPEG:
             opts['format'] = 'bestvideo+bestaudio/best'
@@ -290,9 +312,7 @@ async def _download_yt_video(url, quality=None):
             logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                if info.get('requested_downloads'):
-                    return info['requested_downloads'][0]['filepath']
-                return ydl.prepare_filename(info)
+                return _resolve_yt_path(ydl, info)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
         except Exception as ex:
@@ -304,6 +324,7 @@ async def _download_yt_video(url, quality=None):
 
 async def _download_yt_audio(url):
     def _dl():
+        os.makedirs(MEDIA_DIR, exist_ok=True)
         opts = dict(_YT_DL_OPTS)
         if _HAS_FFMPEG:
             opts['format'] = 'bestaudio/best'
@@ -317,9 +338,7 @@ async def _download_yt_audio(url):
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                if info.get('requested_downloads'):
-                    return info['requested_downloads'][0]['filepath']
-                return ydl.prepare_filename(info)
+                return _resolve_yt_path(ydl, info)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
         except Exception as ex:
@@ -394,8 +413,7 @@ async def _download_instagram_video(url):
             return path
         except OSError as ex:
             raise ValueError(f"Ошибка сохранения файла: {ex}")
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _dl)
+    return await asyncio.to_thread(_dl)
 
 
 async def _download_tiktok_video(url):
@@ -464,8 +482,7 @@ async def _download_tiktok_video(url):
         except OSError as ex:
             raise ValueError(f"Ошибка сохранения файла: {ex}")
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _dl)
+    return await asyncio.to_thread(_dl)
 
 
 async def _run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
@@ -2013,10 +2030,14 @@ async def ytshow_cmd(e):
         url = raw
         height = None
 
-    async def edit_fn(text):
-        await respond(e, text)
+    status_msg = await respond(e, f"⏳ Загружаю ({'авто' if not height else f'{height}p'})...")
 
-    await edit_fn(f"⏳ Загружаю ({'авто' if not height else f'{height}p'})...")
+    async def edit_fn(text):
+        try:
+            await status_msg.edit(text)
+        except Exception:
+            pass
+
     filename = await _run_download(edit_fn, url, mode='video', quality=height, timeout=600)
     if filename:
         await _send_and_clean(edit_fn, e.chat_id, filename, f"🎬 YouTube: {url}")
@@ -2027,16 +2048,23 @@ async def dl_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
 
-    async def edit_fn(text):
-        await respond(e, text)
+    status_msg = await respond(e, "⏳ Загрузка...")
 
-    await edit_fn("⏳ Загрузка...")
+    async def edit_fn(text):
+        try:
+            await status_msg.edit(text)
+        except Exception:
+            pass
+
     try:
         filename = await _run_download(edit_fn, url, mode='video', timeout=600)
         if filename:
             await _send_and_clean(edit_fn, e.chat_id, filename)
     except Exception as ex:
-        await respond(e, f"❌ Ошибка: {ex}")
+        try:
+            await status_msg.edit(f"❌ Ошибка: {ex}")
+        except Exception:
+            pass
         logger.error(f"dl error: {ex}")
     db.bump_stat('cmds')
 
@@ -2079,8 +2107,7 @@ async def playlist_cmd(e):
                         video_urls.append(f'https://youtube.com/watch?v={entry["id"]}')
                 return title, video_urls
 
-        loop = asyncio.get_event_loop()
-        title, video_urls = await loop.run_in_executor(None, _get_playlist_info)
+        title, video_urls = await asyncio.to_thread(_get_playlist_info)
 
         if not video_urls:
             await msg.edit("❌ Плейлист пуст или недоступен.")
@@ -2122,15 +2149,23 @@ async def audio_cmd(e):
     if check_cover(e): return
     url = e.pattern_match.group(1).strip()
 
+    status_msg = await respond(e, "⏳ Загрузка аудио...")
+
     async def edit_fn(text):
-        await respond(e, text)
+        try:
+            await status_msg.edit(text)
+        except Exception:
+            pass
 
     try:
         filename = await _run_download(edit_fn, url, mode='audio', timeout=600)
         if filename:
             await _send_and_clean(edit_fn, e.chat_id, filename, f"🎵 Аудио")
     except Exception as ex:
-        await respond(e, f"❌ Ошибка: {ex}")
+        try:
+            await status_msg.edit(f"❌ Ошибка: {ex}")
+        except Exception:
+            pass
         logger.error(f"audio error: {ex}")
     db.bump_stat('cmds')
 
@@ -2189,8 +2224,7 @@ async def sub_cmd(e):
                     return r.text
                 return None
 
-        loop = asyncio.get_event_loop()
-        srt_content = await loop.run_in_executor(None, _get_captions)
+        srt_content = await asyncio.to_thread(_get_captions)
 
         if srt_content:
             sub_path = os.path.join(MEDIA_DIR, f'sub_{lang}.srt')
