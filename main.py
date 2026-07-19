@@ -255,6 +255,11 @@ _COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies
 if not os.path.exists(_COOKIES_PATH):
     logger.warning("cookies.txt не найден — age-restricted YouTube видео могут не загружаться")
 
+try:
+    logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
+except Exception:
+    logger.info("yt-dlp version: unknown")
+
 _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
@@ -297,8 +302,42 @@ def _resolve_yt_path(ydl, info):
     raise ValueError("Файл не найден после загрузки (возможно, проблема с ffmpeg пост-обработкой)")
 
 
+def _probe_formats(url, opts):
+    probe_opts = dict(opts)
+    probe_opts['format'] = None
+    probe_opts['extract_flat'] = False
+    probe_opts['skip_download'] = True
+    try:
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats') or []
+            logger.info(f"YouTube formats for {info.get('id', '?')}: {len(formats)} total, "
+                        f"title={info.get('title', '?')[:60]}, "
+                        f"channel={info.get('channel', '?')}, "
+                        f"live={info.get('is_live')}")
+            if not formats:
+                logger.warning(f"Zero formats! extractor={info.get('extractor', '?')}, "
+                              f"webpage_url={info.get('webpage_url', '?')}")
+            return info
+    except Exception as ex:
+        logger.error(f"Probe failed: {ex}")
+        return None
+
+
 def _pick_format_and_download(url, opts, quality, is_audio):
     os.makedirs(MEDIA_DIR, exist_ok=True)
+
+    if not _HAS_FFMPEG:
+        info = _probe_formats(url, opts)
+        if info:
+            formats = info.get('formats') or []
+            if not formats:
+                raise ValueError(
+                    "YouTube не вернул ни одного формата для этого видео. "
+                    "Возможные причины: видео удалено, недоступно в регионе, "
+                    "требует авторизации или это YouTube Shorts. "
+                    "Попробуйте обновить cookies.txt или другое видео."
+                )
 
     if _HAS_FFMPEG and is_audio:
         opts['format'] = 'bestaudio/best'
