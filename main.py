@@ -303,27 +303,78 @@ def _resolve_yt_path(ydl, info):
 
 
 def _probe_formats(url, opts):
-    probe_opts = dict(opts)
-    if 'format' in probe_opts:
-        del probe_opts['format']
-    probe_opts['extract_flat'] = True
-    probe_opts['skip_download'] = True
+    attempts = [
+        ('flat', {'extract_flat': True}),
+        ('web_client', {'extract_flat': True,
+                        'extractor_args': {'youtube': {'player_client': ['web']}}}),
+    ]
+    for label, extra in attempts:
+        probe_opts = dict(opts)
+        probe_opts.pop('format', None)
+        probe_opts.pop('extractor_args', None)
+        probe_opts['skip_download'] = True
+        probe_opts.update(extra)
+        try:
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                logger.info(f"YouTube probe [{label}]: id={info.get('id', '?')}, "
+                            f"title=\"{info.get('title', '?')[:80]}\", "
+                            f"channel={info.get('channel', '?')}")
+                if info.get('title'):
+                    return info
+        except yt_dlp.utils.DownloadError as ex:
+            logger.warning(f"Probe [{label}] failed: {ex}")
+            continue
+        except Exception as ex:
+            logger.warning(f"Probe [{label}] unexpected: {ex}")
+            continue
+    _dl_diag(url)
+    return None
+
+
+def _dl_diag(url):
     try:
-        with yt_dlp.YoutubeDL(probe_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            logger.info(f"YouTube probe: id={info.get('id', '?')}, "
-                        f"title=\"{info.get('title', '?')[:80]}\", "
-                        f"channel={info.get('channel', '?')}, "
-                        f"live={info.get('is_live')}, "
-                        f"age_limit={info.get('age_limit')}")
-            if not info.get('title'):
-                raise ValueError("YouTube не вернул информацию о видео")
-            return info
-    except yt_dlp.utils.DownloadError as ex:
-        logger.error(f"Probe failed (DownloadError): {ex}")
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, '-m', 'yt_dlp', '--verbose', '--flat-playlist', '-J', '--no-check-certificates', url],
+            capture_output=True, text=True, timeout=60
+        )
+        logger.info(f"yt-dlp CLI stdout: {result.stdout[:500]}")
+        logger.info(f"yt-dlp CLI stderr: {result.stderr[:500]}")
+    except Exception as ex:
+        logger.error(f"yt-dlp CLI diag failed: {ex}")
+
+
+def _cli_download(url, output_path):
+    """Fallback: yt-dlp через subprocess если Python API не работает"""
+    import subprocess, sys
+    cmd = [
+        sys.executable, '-m', 'yt_dlp',
+        '-f', 'best',
+        '-o', output_path,
+        '--no-playlist',
+        '--no-check-certificates',
+        url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode == 0:
+            import glob
+            matches = sorted(glob.glob(output_path.replace('%(ext)s', '*')), key=os.path.getmtime, reverse=True)
+            if matches:
+                return matches[0]
+            stderr_lower = result.stderr.lower()
+            import re
+            m = re.search(r'\[download\]\s+(.+?)\s+has already been downloaded', result.stderr, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+        logger.error(f"CLI download failed (rc={result.returncode}): {result.stderr[:300]}")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.error("CLI download timed out")
         return None
     except Exception as ex:
-        logger.warning(f"Probe failed: {ex}")
+        logger.error(f"CLI download error: {ex}")
         return None
 
 
@@ -333,6 +384,12 @@ def _pick_format_and_download(url, opts, quality, is_audio):
     if not _HAS_FFMPEG:
         probe = _probe_formats(url, opts)
         if probe is None:
+            logger.warning("Python API probe failed, trying CLI fallback...")
+            ext = 'mp3' if is_audio else 'mp4'
+            cli_path = os.path.join(MEDIA_DIR, f'%(id)s.{ext}')
+            cli_result = _cli_download(url, cli_path)
+            if cli_result:
+                return cli_result
             raise ValueError(
                 "YouTube видео недоступно для скачивания. Возможные причины: "
                 "видео удалено, youtube заблокировал запрос (устаревший yt-dlp?), "
