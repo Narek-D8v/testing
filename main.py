@@ -257,6 +257,7 @@ _YT_DL_OPTS = {
     'noplaylist': True,
     'nocheckcertificate': True,
     'cachedir': False,
+    'cookiefile': os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt')),
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
