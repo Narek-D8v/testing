@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 
 import aiohttp
 import yt_dlp
@@ -400,8 +401,16 @@ def _find_m3u8_in_html(html):
     return urls
 
 
+def _resolve_url(base, uri):
+    if uri.startswith('http://') or uri.startswith('https://'):
+        return uri
+    from urllib.parse import urljoin
+    return urljoin(base, uri)
+
+
 async def _download_m3u8_video(m3u8_url, output_path):
     import m3u8
+    from urllib.parse import urljoin
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
             async with s.get(m3u8_url) as resp:
@@ -410,12 +419,9 @@ async def _download_m3u8_video(m3u8_url, output_path):
                 content = await resp.text()
         playlist = m3u8.loads(content)
         seg_urls = []
-        base = '/'.join(m3u8_url.split('/')[:-1]) + '/'
         if playlist.is_variant:
             top = max(playlist.playlists, key=lambda p: p.stream_info.resolution[1] if p.stream_info.resolution else 0)
-            variant_url = top.uri
-            if not variant_url.startswith('http'):
-                variant_url = base + '/' + variant_url
+            variant_url = _resolve_url(m3u8_url, top.uri)
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
                 async with s.get(variant_url) as resp:
                     if resp.status != 200:
@@ -423,15 +429,13 @@ async def _download_m3u8_video(m3u8_url, output_path):
                     content = await resp.text()
             playlist = m3u8.loads(content)
         for seg in playlist.segments:
-            uri = seg.uri
-            if not uri.startswith('http'):
-                uri = base + '/' + uri
+            uri = _resolve_url(m3u8_url, seg.uri)
             seg_urls.append(uri)
         if not seg_urls:
             return None
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as s:
             with open(output_path, 'wb') as f:
-                for i, seg_url in enumerate(seg_urls):
+                for seg_url in seg_urls:
                     try:
                         async with s.get(seg_url) as resp:
                             if resp.status == 200:
@@ -461,18 +465,6 @@ async def _download_generic(url, mode, event_edit_func):
             return filename
     except Exception as ex:
         logger.warning(f"yt-dlp generic failed: {ex}")
-        err_msg = str(ex)
-        if 'No video formats' in err_msg:
-            try:
-                logger.info("Пробую скачать как изображение через yt-dlp...")
-                img_opts = dict(_GEN_OPTS)
-                img_opts['format'] = 'b'
-                img_opts.pop('extractor_args', None)
-                filename = await asyncio.to_thread(lambda: _dl_generic_sync(url, img_opts))
-                if filename:
-                    return filename
-            except Exception:
-                pass
 
     if _is_direct_media(url):
         await event_edit_func("📥 Скачиваю напрямую...")
@@ -560,6 +552,22 @@ def _dl_generic_sync(url, opts):
             if 'No video formats' in str(ex):
                 continue
             raise
+    last_ex_str = str(last_ex) if last_ex else ''
+
+    if 'No video formats' in last_ex_str:
+        try:
+            with yt_dlp.YoutubeDL({**opts, 'skip_download': True, 'quiet': True, 'no_warnings': True, 'format': None}) as ydl:
+                info = ydl.extract_info(url, download=False)
+            thumb_url = info.get('thumbnail') or (info.get('entries') or [{}])[0].get('thumbnail')
+            if thumb_url:
+                ext = os.path.splitext(thumb_url.split('?')[0])[1] or '.jpg'
+                path = os.path.join(MEDIA_DIR, f'img_{info.get("id", int(time.time()))}{ext}')
+                urllib.request.urlretrieve(thumb_url, path)
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    return path
+        except Exception as ex:
+            logger.warning(f"Thumbnail download failed: {ex}")
+
     return None
 
 
