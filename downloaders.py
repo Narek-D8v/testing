@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import aiohttp
 import yt_dlp
@@ -51,6 +52,17 @@ try:
 except Exception:
     logger.info("yt-dlp version: unknown")
 
+_JS_RUNTIMES = {}
+if subprocess.run(['node', '--version'], capture_output=True, check=False).returncode == 0:
+    _JS_RUNTIMES['node'] = {}
+    logger.info("JS runtime: node найден")
+if subprocess.run(['deno', '--version'], capture_output=True, check=False).returncode == 0:
+    _JS_RUNTIMES['deno'] = {}
+    logger.info("JS runtime: deno найден")
+if not _JS_RUNTIMES:
+    logger.warning("JS runtime не найден (node/deno) — установи для лучшей совместимости с YouTube")
+    logger.warning("  apt install nodejs  или  curl -fsSL https://deno.land/install.sh | sh")
+
 _YT_DL_OPTS = {
     'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
     'quiet': True,
@@ -62,7 +74,7 @@ _YT_DL_OPTS = {
     'retry_sleep': lambda n: 5 + n * 3,
     'throttledratelimit': 100000,
     'sleep_interval_requests': 2,
-    'js_runtimes': {'node': {}, 'deno': {}},
+    'js_runtimes': _JS_RUNTIMES,
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web'],
@@ -115,22 +127,22 @@ async def _try_invidious(url, mode):
     for instance in _INVIDIOUS_INSTANCES:
         try:
             api_url = f"https://{instance}/api/v1/videos/{video_id}"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
                 async with s.get(api_url) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json()
-            title = data.get('title', video_id)
-            formats = data.get('formatStreams', []) + data.get('adaptiveFormats', [])
-            if not formats:
-                continue
+            title = data.get('title', video_id) or video_id
+            combined = data.get('formatStreams') or []
+            adaptive = data.get('adaptiveFormats') or []
             if mode == 'audio':
-                best = max((f for f in formats if f.get('encoding') and 'audio' in f.get('type', '') and f.get('bitrate')), key=lambda f: f['bitrate'], default=None)
+                picks = adaptive + combined
+                best = max((f for f in picks if f.get('url') and (f.get('bitrate') or 0)), key=lambda f: f['bitrate'], default=None)
             else:
-                best = max((f for f in formats if f.get('encoding') and 'video' in f.get('type', '') and f.get('height')), key=lambda f: f['height'], default=None)
-                if not best:
-                    best = max(formats, key=lambda f: f.get('bitrate') or 0)
-            if not best or 'url' not in best:
+                best = max((f for f in combined if f.get('url') and (f.get('height') or 0)), key=lambda f: f['height'], default=None)
+                if not best and adaptive:
+                    best = max((f for f in adaptive if f.get('url') and (f.get('height') or 0)), key=lambda f: f['height'], default=None)
+            if not best:
                 continue
             ext = best.get('container', 'mp4')
             path = os.path.join(MEDIA_DIR, f"{video_id}_invidious.{ext}")
@@ -221,9 +233,6 @@ def _cli_download(url, output_path):
         '-o', output_path,
         '--no-playlist',
         '--no-check-certificates',
-        '--js-runtimes', 'node',
-        '--js-runtimes', 'deno',
-
         url,
     ]
     try:
@@ -258,18 +267,18 @@ def _pick_format_and_download(url, opts, quality, is_audio):
             cli_result = _cli_download(url, cli_path)
             if cli_result:
                 return cli_result
-            cookie_hint = ""
-            if not _COOKIES_VALID:
-                cookie_hint = (
-                    "\n\n🔑 Для скачивания с YouTube с сервера нужны cookies.\n"
-                    "1. Установи расширение «Get cookies.txt» (Chrome)\n"
-                    "2. Зайди на youtube.com и экспортируй cookies\n"
-                    "3. Скопируй cookies.txt.example → cookies.txt, вставь свои cookies"
+            if not _JS_RUNTIMES:
+                hint = (
+                    "\n\n📦 Установи JS-рантайм для yt-dlp и перезапусти:\n"
+                    "  apt install nodejs\n"
+                    "  # или: curl -fsSL https://deno.land/install.sh | sh"
                 )
-            raise ValueError(
-                "YouTube видео недоступно для скачивания."
-                + cookie_hint
-            )
+            else:
+                hint = (
+                    "\n\n🔑 YouTube всё ещё блокирует IP. Тогда нужны cookies:\n"
+                    "  cookies.txt.example → cookies.txt, экспорт из браузера"
+                )
+            raise ValueError("YouTube блокирует сервер." + hint)
 
     if _HAS_FFMPEG and is_audio:
         opts['format'] = 'ba/b'
@@ -360,6 +369,152 @@ async def _download_tiktok_video(url):
     return await asyncio.to_thread(_dl)
 
 
+_GEN_OPTS = {
+    'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
+    'quiet': True,
+    'no_warnings': True,
+    'noplaylist': True,
+    'playlist_items': '1',
+    'extractor_retries': 3,
+    'fragment_retries': 3,
+    'retry_sleep': lambda n: 5 + n * 2,
+    'sleep_interval_requests': 1,
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    },
+}
+
+
+def _is_direct_media(url):
+    return bool(re.search(r'\.(mp4|webm|mkv|avi|mov|flv|wmv|mp3|aac|ogg|wav|m4a)($|\?)', url.lower()))
+
+
+def _find_m3u8_in_html(html):
+    urls = re.findall(r'(https?://[^"\'\s<>]+?\.m3u8[^"\'\s<>]*)', html)
+    if not urls:
+        urls = re.findall(r'["\']([^"\']+\.m3u8[^"\']*)["\']', html)
+    return urls
+
+
+async def _download_m3u8_video(m3u8_url, output_path):
+    import m3u8
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+            async with s.get(m3u8_url) as resp:
+                if resp.status != 200:
+                    return None
+                content = await resp.text()
+        playlist = m3u8.loads(content)
+        seg_urls = []
+        base = '/'.join(m3u8_url.split('/')[:-1]) + '/'
+        if playlist.is_variant:
+            top = max(playlist.playlists, key=lambda p: p.stream_info.resolution[1] if p.stream_info.resolution else 0)
+            variant_url = top.uri
+            if not variant_url.startswith('http'):
+                variant_url = base + '/' + variant_url
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+                async with s.get(variant_url) as resp:
+                    if resp.status != 200:
+                        return None
+                    content = await resp.text()
+            playlist = m3u8.loads(content)
+        for seg in playlist.segments:
+            uri = seg.uri
+            if not uri.startswith('http'):
+                uri = base + '/' + uri
+            seg_urls.append(uri)
+        if not seg_urls:
+            return None
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as s:
+            with open(output_path, 'wb') as f:
+                for i, seg_url in enumerate(seg_urls):
+                    try:
+                        async with s.get(seg_url) as resp:
+                            if resp.status == 200:
+                                data = await resp.read()
+                                f.write(data)
+                    except Exception:
+                        continue
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+    except Exception as ex:
+        logger.warning(f"m3u8 download failed: {ex}")
+    return None
+
+
+async def _download_generic(url, mode, event_edit_func):
+    await event_edit_func("🌐 Пробую yt-dlp...")
+    try:
+        opts = dict(_GEN_OPTS)
+        if mode == 'audio':
+            if _HAS_FFMPEG:
+                opts['format'] = 'ba/b'
+                opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+            else:
+                opts['format'] = 'ba'
+        filename = await asyncio.to_thread(lambda: _dl_generic_sync(url, opts))
+        if filename:
+            return filename
+    except Exception as ex:
+        logger.warning(f"yt-dlp generic failed: {ex}")
+
+    if _is_direct_media(url):
+        await event_edit_func("📥 Скачиваю напрямую...")
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as s:
+                async with s.get(url) as resp:
+                    if resp.status == 200:
+                        ext = os.path.splitext(url.split('?')[0])[1] or '.mp4'
+                        path = os.path.join(MEDIA_DIR, f'direct_{int(time.time())}{ext}')
+                        with open(path, 'wb') as f:
+                            while True:
+                                chunk = await resp.content.read(65536)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        if os.path.getsize(path) > 0:
+                            return path
+        except Exception as ex:
+            logger.warning(f"Direct download failed: {ex}")
+
+    await event_edit_func("🔍 Ищу m3u8...")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    m3u8_urls = _find_m3u8_in_html(html)
+                    for m3u8_url in m3u8_urls:
+                        path = os.path.join(MEDIA_DIR, f'm3u8_{int(time.time())}.mp4')
+                        result = await _download_m3u8_video(m3u8_url, path)
+                        if result:
+                            return result
+    except Exception as ex:
+        logger.warning(f"m3u8 search failed: {ex}")
+
+    return None
+
+
+def _dl_generic_sync(url, opts):
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filepath = None
+        if info.get('requested_downloads'):
+            filepath = info['requested_downloads'][0].get('filepath')
+        if not filepath or not os.path.exists(filepath or ''):
+            filepath = ydl.prepare_filename(info)
+        if filepath and os.path.exists(filepath):
+            return filepath
+        video_id = info.get('id')
+        if video_id:
+            matches = sorted(glob.glob(os.path.join(MEDIA_DIR, f'{video_id}.*')), key=os.path.getmtime, reverse=True)
+            if matches:
+                return matches[0]
+    return None
+
+
 async def run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
     logger.info(f"[download] Starting: {url} (mode={mode})")
     try:
@@ -394,8 +549,7 @@ async def run_download(event_edit_func, url, mode='video', quality=None, timeout
                     _download_yt_video(url, quality), timeout=timeout
                 )
         else:
-            await event_edit_func("❌ Поддерживаются: YouTube, Instagram, TikTok.")
-            return None
+            return await _download_generic(url, mode, event_edit_func)
 
         if filename and os.path.exists(filename):
             size = format_bytes(os.path.getsize(filename))
