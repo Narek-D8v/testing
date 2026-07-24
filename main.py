@@ -894,7 +894,7 @@ async def search_cmd(e):
             body = (r.get('body', '') or '')[:120]
             lines.append(f"{i}. [{title}]({href})")
             if body:
-                lines.append(f"   _{body}{\"...\" if len(r.get('body', '')) > 120 else ''}_")
+                lines.append(f"   _{body}{'...' if len(r.get('body', '')) > 120 else ''}_")
         await msg.edit("\n".join(lines))
     except Exception as ex:
         await msg.edit(f"❌ Ошибка поиска: {ex}")
