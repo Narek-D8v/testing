@@ -571,18 +571,79 @@ def _dl_generic_sync(url, opts):
     return None
 
 
+async def _download_pinterest_pin(url):
+    from pinterest_downloader import Pinterest
+    try:
+        p = Pinterest()
+        pin = p.get_pin(url)
+        if not pin.get('ok'):
+            raise ValueError(f"Pinterest: {pin.get('message', 'не удалось получить данные')}")
+        pin_data = pin['pin']
+        media_type = pin_data.get('media_type', 'image')
+        if media_type == 'video':
+            video_info = pin_data.get('video') or {}
+            formats = video_info.get('formats') or []
+            if formats:
+                best = max(formats, key=lambda f: f.get('height', 0) or 0)
+                vid_url = best.get('url')
+                if vid_url:
+                    return await _generic_direct_download(vid_url)
+            poster = video_info.get('poster') or pin_data.get('media', {}).get('poster')
+            if poster:
+                return await _generic_direct_download(poster)
+        images = pin_data.get('images', {})
+        for key in ('orig', '736x', '474x', '236x', '170x'):
+            entry = images.get(key)
+            if entry and entry.get('url'):
+                return await _generic_direct_download(entry['url'])
+        embed = pin_data.get('embed') or {}
+        if embed.get('src'):
+            return await _generic_direct_download(embed['src'])
+        raise ValueError("Не удалось найти media URL в данных Pinterest")
+    except ValueError:
+        raise
+    except Exception as ex:
+        raise ValueError(f"Pinterest: {ex}")
+
+
+async def _generic_direct_download(url):
+    ext = os.path.splitext(url.split('?')[0].split('/')[-1])[1]
+    if not ext or ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.webm', '.mov'):
+        ext = '.jpg'
+    path = os.path.join(MEDIA_DIR, f'pin_{int(time.time())}{ext}')
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as s:
+        async with s.get(url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
+            if resp.status != 200:
+                raise ValueError(f"HTTP {resp.status} при скачивании {url}")
+            with open(path, 'wb') as f:
+                while True:
+                    chunk = await resp.content.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    raise ValueError("Файл пуст после скачивания")
+
+
 async def run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
     logger.info(f"[download] Starting: {url} (mode={mode})")
     try:
         is_instagram = 'instagram.com' in url.lower()
         is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
         is_tiktok = 'tiktok.com' in url.lower()
+        is_pinterest = 'pinterest.com' in url.lower() or 'pin.it' in url.lower()
         if is_youtube:
             m = re.match(r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[a-zA-Z0-9_-]{11})', url)
             if m:
                 url = m.group(1)
 
-        if is_tiktok:
+        if is_pinterest:
+            await event_edit_func("📥 Скачиваю из Pinterest...")
+            filename = await asyncio.wait_for(
+                _download_pinterest_pin(url), timeout=timeout
+            )
+        elif is_tiktok:
             await event_edit_func("📥 Скачиваю из TikTok...")
             filename = await asyncio.wait_for(
                 _download_tiktok_video(url), timeout=timeout
