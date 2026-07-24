@@ -572,21 +572,11 @@ def _dl_generic_sync(url, opts):
 
 
 async def _download_pinterest_pin(url):
-    try:
-        from pinterest_downloader import Pinterest
-        p = Pinterest()
-        pin = p.get_pin(url)
-        if pin.get('ok'):
-            media_url = _extract_pin_media(pin['pin'])
-            if media_url:
-                fallback = None
-                if '/originals/' in media_url:
-                    fallback = media_url.replace('/originals/', '/736x/')
-                return await _generic_direct_download(media_url, fallback_736x=fallback)
-        logger.info("Pinterest library failed, falling back to HTML scrape")
-    except Exception as ex:
-        logger.warning(f"Pinterest library error: {ex}, falling back to HTML scrape")
+    yt_path = await _try_ytdlp_pinterest(url)
+    if yt_path:
+        return yt_path
 
+    logger.info("No video from yt-dlp, scraping image...")
     originals_url, fallback_url = await _scrape_pinterest_image(url)
     if originals_url:
         try:
@@ -596,31 +586,30 @@ async def _download_pinterest_pin(url):
                 logger.info(f"originals failed ({ex}), trying 736x fallback")
                 return await _generic_direct_download(fallback_url)
             raise
-    raise ValueError("Pinterest: не удалось найти изображение на странице")
+    raise ValueError("Pinterest: не удалось найти медиа на странице")
 
 
-def _extract_pin_media(pin_data):
-    media_type = pin_data.get('media_type', 'image')
-    if media_type == 'video':
-        video_info = pin_data.get('video') or {}
-        formats = video_info.get('formats') or []
-        if formats:
-            best = max(formats, key=lambda f: f.get('height', 0) or 0)
-            vid_url = best.get('url')
-            if vid_url:
-                return vid_url
-        poster = video_info.get('poster') or pin_data.get('media', {}).get('poster')
-        if poster:
-            return poster
-    images = pin_data.get('images', {})
-    for key in ('orig', '736x', '474x', '236x', '170x'):
-        entry = images.get(key)
-        if entry and entry.get('url'):
-            return entry['url']
-    embed = pin_data.get('embed') or {}
-    if embed.get('src'):
-        return embed['src']
-    return None
+async def _try_ytdlp_pinterest(url):
+    def _dl():
+        opts = dict(_YT_DL_OPTS)
+        opts['format'] = 'bv*+ba/b'
+        opts['merge_output_format'] = 'mp4'
+        opts['extractor_args'] = {'pinterest': {'video': ['true']}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                fp = _resolve_yt_path(ydl, info)
+                if fp:
+                    return fp
+        except yt_dlp.utils.DownloadError as ex:
+            if 'No video formats' in str(ex):
+                return None
+            logger.warning(f"yt-dlp Pinterest error: {ex}")
+            return None
+        except Exception as ex:
+            logger.warning(f"yt-dlp Pinterest error: {ex}")
+        return None
+    return await asyncio.to_thread(_dl)
 
 
 async def _scrape_pinterest_image(url):
