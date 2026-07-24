@@ -461,6 +461,18 @@ async def _download_generic(url, mode, event_edit_func):
             return filename
     except Exception as ex:
         logger.warning(f"yt-dlp generic failed: {ex}")
+        err_msg = str(ex)
+        if 'No video formats' in err_msg:
+            try:
+                logger.info("Пробую скачать как изображение через yt-dlp...")
+                img_opts = dict(_GEN_OPTS)
+                img_opts['format'] = 'b'
+                img_opts.pop('extractor_args', None)
+                filename = await asyncio.to_thread(lambda: _dl_generic_sync(url, img_opts))
+                if filename:
+                    return filename
+            except Exception:
+                pass
 
     if _is_direct_media(url):
         await event_edit_func("📥 Скачиваю напрямую...")
@@ -481,6 +493,28 @@ async def _download_generic(url, mode, event_edit_func):
         except Exception as ex:
             logger.warning(f"Direct download failed: {ex}")
 
+    await event_edit_func("🖼 Пробую скачать как картинку...")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    og_img = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html, re.IGNORECASE)
+                    if og_img:
+                        img_url = og_img.group(1).replace('&amp;', '&')
+                        ext = os.path.splitext(img_url.split('?')[0])[1] or '.jpg'
+                        path = os.path.join(MEDIA_DIR, f'img_{int(time.time())}{ext}')
+                        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s2:
+                            async with s2.get(img_url) as img_resp:
+                                if img_resp.status == 200:
+                                    with open(path, 'wb') as f:
+                                        async for chunk in img_resp.content.iter_chunked(65536):
+                                            f.write(chunk)
+                                    if os.path.getsize(path) > 0:
+                                        return path
+    except Exception as ex:
+        logger.warning(f"Image fallback failed: {ex}")
+
     await event_edit_func("🔍 Ищу m3u8...")
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
@@ -500,20 +534,32 @@ async def _download_generic(url, mode, event_edit_func):
 
 
 def _dl_generic_sync(url, opts):
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filepath = None
-        if info.get('requested_downloads'):
-            filepath = info['requested_downloads'][0].get('filepath')
-        if not filepath or not os.path.exists(filepath or ''):
-            filepath = ydl.prepare_filename(info)
-        if filepath and os.path.exists(filepath):
-            return filepath
-        video_id = info.get('id')
-        if video_id:
-            matches = sorted(glob.glob(os.path.join(MEDIA_DIR, f'{video_id}.*')), key=os.path.getmtime, reverse=True)
-            if matches:
-                return matches[0]
+    last_ex = None
+    for fmt_override in [None, 'b', 'best']:
+        try:
+            if fmt_override:
+                opts['format'] = fmt_override
+            elif 'format' in opts:
+                del opts['format']
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filepath = None
+                if info.get('requested_downloads'):
+                    filepath = info['requested_downloads'][0].get('filepath')
+                if not filepath or not os.path.exists(filepath or ''):
+                    filepath = ydl.prepare_filename(info)
+                if filepath and os.path.exists(filepath):
+                    return filepath
+                video_id = info.get('id')
+                if video_id:
+                    matches = sorted(glob.glob(os.path.join(MEDIA_DIR, f'{video_id}.*')), key=os.path.getmtime, reverse=True)
+                    if matches:
+                        return matches[0]
+        except yt_dlp.utils.DownloadError as ex:
+            last_ex = ex
+            if 'No video formats' in str(ex):
+                continue
+            raise
     return None
 
 
