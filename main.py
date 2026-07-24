@@ -876,7 +876,7 @@ async def remind_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!search (.+)', func=owner_filter))
 async def search_cmd(e):
-    query = e.pattern_match.group(1).strip()
+    query = _to_english(e.pattern_match.group(1).strip())
     msg = await respond(e, "⏳ Ищу...")
     try:
         params = {
@@ -931,9 +931,10 @@ async def weather_cmd(e):
     city = e.pattern_match.group(1).strip()
     msg = await respond(e, "⏳ Запрашиваю погоду...")
     try:
+        city_en = _to_english(city)
         from urllib.parse import quote
         async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://wttr.in/{quote(city)}?format=j1",
+            async with s.get(f"https://wttr.in/{quote(city_en)}?format=j1",
                              timeout=aiohttp.ClientTimeout(total=15)) as r:
                 if r.status != 200:
                     raise ConnectionError(f"HTTP {r.status}")
@@ -963,7 +964,7 @@ async def weather_cmd(e):
         logger.warning(f"wttr.in failed: {ex}, trying Open-Meteo...")
         async with aiohttp.ClientSession() as s:
             geo_r = await s.get(
-                f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}&count=1",
+                f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city_en)}&count=1",
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             if geo_r.status != 200:
@@ -1013,21 +1014,33 @@ async def weather_cmd(e):
 
 _translator = None
 
-def _get_translator():
+def _get_translator(target='ru'):
     global _translator
     if _translator is None:
-        _translator = GoogleTranslator(source='auto', target='ru')
-    return _translator
+        _translator = {}
+    if target not in _translator:
+        _translator[target] = GoogleTranslator(source='auto', target=target)
+    return _translator[target]
 
-@client.on(events.NewMessage(pattern=r'!translate (.+)', func=owner_filter))
+def _to_english(text):
+    latin = sum(1 for c in text if 'a' <= c <= 'z' or 'A' <= c <= 'Z')
+    if latin / max(len(text), 1) > 0.5:
+        return text
+    try:
+        return _get_translator('en').translate(text)
+    except Exception:
+        return text
+
+@client.on(events.NewMessage(pattern=r'!translate(?: ([a-z]{2}))? (.+)', func=owner_filter))
 async def translate_cmd(e):
 
-    text = e.pattern_match.group(1).strip()
+    target_lang = e.pattern_match.group(1) or 'ru'
+    text = e.pattern_match.group(2).strip()
     msg = await respond(e, "⏳ Перевожу...")
     try:
-        t = await asyncio.to_thread(_get_translator)
+        t = await asyncio.to_thread(_get_translator, target_lang)
         result = await asyncio.to_thread(t.translate, text)
-        await msg.edit(f"🌐 **Перевод:**\n\n{result}")
+        await msg.edit(f"🌐 **Перевод ({target_lang}):**\n\n{result}")
     except Exception as ex:
         await msg.edit(f"❌ Ошибка перевода: {ex}")
     db.bump_stat('cmds')
@@ -2274,10 +2287,10 @@ CMD_DESCS = {
     # утилиты
     'calc':         {'desc': 'Калькулятор', 'syntax': '!calc [выражение]', 'example': '!calc 2+2*2'},
     'remind':       {'desc': 'Напоминание', 'syntax': '!remind [сек] [текст]', 'example': '!remind 60 Поставить чайник'},
-    'search':       {'desc': 'Поиск в DuckDuckGo', 'syntax': '!search [запрос]', 'example': '!search Python'},
+    'search':       {'desc': 'Поиск в Wikipedia', 'syntax': '!search [запрос]', 'example': '!search Python'},
     'shorten':      {'desc': 'Сократить ссылку', 'syntax': '!shorten [url]', 'example': '!shorten https://example.com'},
     'weather':      {'desc': 'Текущая погода в городе', 'syntax': '!weather [город]', 'example': '!weather Moscow'},
-    'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [текст]', 'example': '!translate Hello'},
+    'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [код_языка] [текст]', 'example': '!translate en Привет'},
     'base64':       {'desc': 'Base64 кодирование/декодирование', 'syntax': '!base64 encode|decode [текст]', 'example': '!base64 encode Привет'},
     'hash':         {'desc': 'Хэши (MD5/SHA)', 'syntax': '!hash [текст]', 'example': '!hash password'},
     'morse':        {'desc': 'Азбука Морзе', 'syntax': '!morse [текст]', 'example': '!morse SOS'},

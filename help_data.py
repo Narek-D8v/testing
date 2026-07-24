@@ -57,7 +57,7 @@ CMD_DESCS = {
     'search':       {'desc': 'Поиск в DuckDuckGo', 'syntax': '!search [запрос]', 'example': '!search Python'},
     'shorten':      {'desc': 'Сократить ссылку', 'syntax': '!shorten [url]', 'example': '!shorten https://example.com'},
     'weather':      {'desc': 'Текущая погода в городе', 'syntax': '!weather [город]', 'example': '!weather Moscow'},
-    'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [текст]', 'example': '!translate Hello'},
+    'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [код_языка] [текст]', 'example': '!translate en Привет'},
     'base64':       {'desc': 'Base64 кодирование/декодирование', 'syntax': '!base64 encode|decode [текст]', 'example': '!base64 encode Привет'},
     'hash':         {'desc': 'Хэши (MD5/SHA)', 'syntax': '!hash [текст]', 'example': '!hash password'},
     'morse':        {'desc': 'Азбука Морзе', 'syntax': '!morse [текст]', 'example': '!morse SOS'},
@@ -107,6 +107,7 @@ CMD_DESCS = {
     'check_email':  {'desc': 'Проверить email на утечки', 'syntax': '!check_email <email>', 'example': '!check_email test@example.com'},
     'protect':      {'desc': 'Защита от удаления чатов', 'syntax': '!protect [on|off]', 'example': '!protect on'},
     'rphelp':       {'desc': 'Список RP-команд', 'syntax': '!rphelp', 'example': '!rphelp'},
+    'trhelp':       {'desc': 'Список кодов языков для !translate', 'syntax': '!trhelp', 'example': '!trhelp'},
 }
 
 COMMANDS_LIST = {
@@ -129,7 +130,7 @@ COMMANDS_LIST = {
         '!ytshow', '!dl', '!playlist', '!audio', '!sub'
     ],
     'утилиты': [
-        '!calc', '!remind', '!search', '!shorten', '!weather', '!translate',
+        '!calc', '!remind', '!search', '!shorten', '!weather', '!translate', '!trhelp',
         '!base64', '!hash', '!morse', '!caesar', '!vigenere', '!password',
         '!qr', '!uuid', '!color', '!ascii'
     ],
@@ -223,7 +224,8 @@ HELP_CATS = {
         "`!search [запрос]` — поиск в DuckDuckGo\n"
         "`!shorten [url]` — сократить ссылку\n"
         "`!weather [город]` — погода\n"
-        "`!translate [текст]` — перевод\n"
+        "`!translate [код_языка] [текст]` — перевод (по умолч. ru)\n"
+        "`!trhelp` — список кодов языков\n"
         "`!base64 encode/decode [текст]`\n"
         "`!hash [текст]` — MD5/SHA хэши\n"
         "`!morse [текст]` — азбука Морзе\n"
@@ -352,3 +354,42 @@ async def help_cmd(e):
     lines.append("💡 Для всех команд: `!help all`")
     await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
+
+@client.on(events.NewMessage(pattern=r'!trhelp$', func=owner_filter))
+async def trhelp_cmd(e):
+    lines = ["🌐 **Коды языков Google Translate**\n"]
+    for code in sorted(LANG_CODES):
+        lines.append(f"`{code}` — {LANG_CODES[code]}")
+    text = "\n".join(lines)
+    text += "\n\n💡 Использование: `!translate <код> [текст]`"
+    await respond(e, text)
+
+LANG_CODES = {
+    'af': '🇿🇦 Африкаанс', 'sq': '🇦🇱 Албанский', 'am': '🇪🇹 Амхарский', 'ar': '🇸🇦 Арабский',
+    'hy': '🇦🇲 Армянский', 'az': '🇦🇿 Азербайджанский', 'eu': '🇪🇸 Баскский', 'be': '🇧🇾 Белорусский',
+    'bn': '🇧🇩 Бенгальский', 'bs': '🇧🇦 Боснийский', 'bg': '🇧🇬 Болгарский', 'ca': '🇪🇸 Каталанский',
+    'ceb': '🇵🇭 Себуанский', 'ny': '🇲🇼 Чичева', 'zh': '🇨🇳 Китайский', 'co': '🇫🇷 Корсиканский',
+    'hr': '🇭🇷 Хорватский', 'cs': '🇨🇿 Чешский', 'da': '🇩🇰 Датский', 'nl': '🇳🇱 Нидерландский',
+    'en': '🇬🇧 Английский', 'eo': '🌍 Эсперанто', 'et': '🇪🇪 Эстонский', 'tl': '🇵🇭 Филиппинский',
+    'fi': '🇫🇮 Финский', 'fr': '🇫🇷 Французский', 'fy': '🇳🇱 Фризский', 'gl': '🇪🇸 Галисийский',
+    'ka': '🇬🇪 Грузинский', 'de': '🇩🇪 Немецкий', 'el': '🇬🇷 Греческий', 'gu': '🇮🇳 Гуджарати',
+    'ht': '🇭🇹 Гаитянский', 'ha': '🇳🇬 Хауса', 'haw': '🌺 Гавайский', 'he': '🇮🇱 Иврит',
+    'hi': '🇮🇳 Хинди', 'hmn': '🇨🇳 Хмонг', 'hu': '🇭🇺 Венгерский', 'is': '🇮🇸 Исландский',
+    'ig': '🇳🇬 Игбо', 'id': '🇮🇩 Индонезийский', 'ga': '🇮🇪 Ирландский', 'it': '🇮🇹 Итальянский',
+    'ja': '🇯🇵 Японский', 'jv': '🇮🇩 Яванский', 'kn': '🇮🇳 Каннада', 'kk': '🇰🇿 Казахский',
+    'km': '🇰🇭 Кхмерский', 'rw': '🇷🇦 Киньяруанда', 'ko': '🇰🇷 Корейский', 'ku': '🇮🇶 Курдский',
+    'ky': '🇰🇬 Кыргызский', 'lo': '🇱🇦 Лаосский', 'la': '🏛 Латынь', 'lv': '🇱🇻 Латышский',
+    'lt': '🇱🇹 Литовский', 'lb': '🇱🇺 Люксембургский', 'mk': '🇲🇰 Македонский', 'mg': '🇲🇬 Малагасийский',
+    'ms': '🇲🇾 Малайский', 'ml': '🇮🇳 Малаялам', 'mt': '🇲🇹 Мальтийский', 'mi': '🇳🇿 Маори',
+    'mr': '🇮🇳 Маратхи', 'mn': '🇲🇳 Монгольский', 'my': '🇲🇲 Мьянманский', 'ne': '🇳🇵 Непальский',
+    'no': '🇳🇴 Норвежский', 'or': '🇮🇳 Ория', 'ps': '🇦🇫 Пушту', 'fa': '🇮🇷 Персидский',
+    'pl': '🇵🇱 Польский', 'pt': '🇵🇹 Португальский', 'pa': '🇮🇳 Панджаби', 'ro': '🇷🇴 Румынский',
+    'ru': '🇷🇺 Русский', 'sm': '🇼🇸 Самоанский', 'gd': '🏴 Шотландский', 'sr': '🇷🇸 Сербский',
+    'st': '🇱🇸 Сесото', 'sn': '🇿🇼 Шона', 'sd': '🇵🇰 Синдхи', 'si': '🇱🇰 Сингальский',
+    'sk': '🇸🇰 Словацкий', 'sl': '🇸🇮 Словенский', 'so': '🇸🇴 Сомалийский', 'es': '🇪🇸 Испанский',
+    'su': '🇮🇩 Сунданский', 'sw': '🇹🇿 Суахили', 'sv': '🇸🇪 Шведский', 'tg': '🇹🇯 Таджикский',
+    'ta': '🇮🇳 Тамильский', 'tt': '🇷🇺 Татарский', 'te': '🇮🇳 Телугу', 'th': '🇹🇭 Тайский',
+    'tr': '🇹🇷 Турецкий', 'tk': '🇹🇲 Туркменский', 'uk': '🇺🇦 Украинский', 'ur': '🇵🇰 Урду',
+    'ug': '🇨🇳 Уйгурский', 'uz': '🇺🇿 Узбекский', 'vi': '🇻🇳 Вьетнамский', 'cy': '🏴 Валлийский',
+    'xh': '🇿🇦 Коса', 'yi': '🇮🇱 Идиш', 'yo': '🇳🇬 Йоруба', 'zu': '🇿🇦 Зулусский',
+}
