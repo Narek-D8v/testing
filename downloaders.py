@@ -56,6 +56,7 @@ _YT_DL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
+    'playlist_items': '1',
     'extractor_retries': 5,
     'fragment_retries': 5,
     'retry_sleep': lambda n: 5 + n * 3,
@@ -190,7 +191,7 @@ def _probe_formats(url, opts):
                 logger.info(f"YouTube probe [{label}]: id={info.get('id', '?')}, "
                             f"title=\"{info.get('title', '?')[:80]}\", "
                             f"channel={info.get('channel', '?')}")
-                if info.get('title'):
+                if info.get('title') or info.get('entries'):
                     return info
         except yt_dlp.utils.DownloadError as ex:
             logger.warning(f"Probe [{label}] failed: {ex}")
@@ -365,6 +366,10 @@ async def run_download(event_edit_func, url, mode='video', quality=None, timeout
         is_instagram = 'instagram.com' in url.lower()
         is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
         is_tiktok = 'tiktok.com' in url.lower()
+        if is_youtube:
+            m = re.match(r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[a-zA-Z0-9_-]{11})', url)
+            if m:
+                url = m.group(1)
 
         if is_tiktok:
             await event_edit_func("📥 Скачиваю из TikTok...")
