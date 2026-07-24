@@ -53,12 +53,14 @@ except Exception:
     logger.info("yt-dlp version: unknown")
 
 _JS_RUNTIMES = {}
-if subprocess.run(['node', '--version'], capture_output=True, check=False).returncode == 0:
-    _JS_RUNTIMES['node'] = {}
-    logger.info("JS runtime: node найден")
-if subprocess.run(['deno', '--version'], capture_output=True, check=False).returncode == 0:
-    _JS_RUNTIMES['deno'] = {}
-    logger.info("JS runtime: deno найден")
+for _rt in ('node', 'deno'):
+    try:
+        r = subprocess.run([_rt, '--version'], capture_output=True, check=False, timeout=5)
+        if r.returncode == 0:
+            _JS_RUNTIMES[_rt] = {}
+            logger.info(f"JS runtime: {_rt} найден")
+    except (FileNotFoundError, OSError):
+        pass
 if not _JS_RUNTIMES:
     logger.warning("JS runtime не найден (node/deno) — установи для лучшей совместимости с YouTube")
     logger.warning("  apt install nodejs  или  curl -fsSL https://deno.land/install.sh | sh")
