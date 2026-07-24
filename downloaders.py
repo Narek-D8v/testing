@@ -59,6 +59,13 @@ _YT_DL_OPTS = {
     'retry_sleep': lambda n: 5 + n * 3,
     'throttledratelimit': 100000,
     'sleep_interval_requests': 2,
+    'js_runtimes': ['node', 'deno'],
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+            'player_skip': ['js'],
+        },
+    },
     'cookiefile': _COOKIES_PATH if _COOKIES_VALID else None,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -148,6 +155,7 @@ def _cli_download(url, output_path):
         '-o', output_path,
         '--no-playlist',
         '--no-check-certificates',
+        '--js-runtimes', 'node,deno',
         url,
     ]
     try:
@@ -160,7 +168,7 @@ def _cli_download(url, output_path):
             m = re.search(r'\[download\]\s+(.+?)\s+has already been downloaded', result.stderr, re.IGNORECASE)
             if m:
                 return m.group(1).strip()
-        logger.error(f"CLI download failed (rc={result.returncode}): {result.stderr[:300]}")
+        logger.error(f"CLI download failed (rc={result.returncode}): {result.stderr[:3000]}")
         return None
     except subprocess.TimeoutExpired:
         logger.error("CLI download timed out")
