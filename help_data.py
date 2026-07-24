@@ -54,7 +54,7 @@ CMD_DESCS = {
     'sub':          {'desc': 'Скачать субтитры с YouTube', 'syntax': '!sub <URL> [язык]', 'example': '!sub https://youtu.be/... ru'},
     'calc':         {'desc': 'Калькулятор', 'syntax': '!calc [выражение]', 'example': '!calc 2+2*2'},
     'remind':       {'desc': 'Напоминание', 'syntax': '!remind [сек] [текст]', 'example': '!remind 60 Поставить чайник'},
-    'search':       {'desc': 'Поиск в DuckDuckGo', 'syntax': '!search [запрос]', 'example': '!search Python'},
+    'search':       {'desc': 'Поиск в Wikipedia', 'syntax': '!search [запрос]', 'example': '!search Python'},
     'shorten':      {'desc': 'Сократить ссылку', 'syntax': '!shorten [url]', 'example': '!shorten https://example.com'},
     'weather':      {'desc': 'Текущая погода в городе', 'syntax': '!weather [город]', 'example': '!weather Moscow'},
     'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [код_языка] [текст]', 'example': '!translate en Привет'},
@@ -221,7 +221,7 @@ HELP_CATS = {
         "🛠 **УТИЛИТЫ**\n\n"
         "`!calc [выражение]` — калькулятор\n"
         "`!remind [сек] [текст]` — напоминание\n"
-        "`!search [запрос]` — поиск в DuckDuckGo\n"
+        "`!search [запрос]` — поиск в Wikipedia\n"
         "`!shorten [url]` — сократить ссылку\n"
         "`!weather [город]` — погода\n"
         "`!translate [код_языка] [текст]` — перевод (по умолч. ru)\n"
