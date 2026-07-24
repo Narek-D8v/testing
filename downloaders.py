@@ -579,14 +579,23 @@ async def _download_pinterest_pin(url):
         if pin.get('ok'):
             media_url = _extract_pin_media(pin['pin'])
             if media_url:
-                return await _generic_direct_download(media_url)
+                fallback = None
+                if '/originals/' in media_url:
+                    fallback = media_url.replace('/originals/', '/736x/')
+                return await _generic_direct_download(media_url, fallback_736x=fallback)
         logger.info("Pinterest library failed, falling back to HTML scrape")
     except Exception as ex:
         logger.warning(f"Pinterest library error: {ex}, falling back to HTML scrape")
 
-    img_url = await _scrape_pinterest_image(url)
-    if img_url:
-        return await _generic_direct_download(img_url)
+    originals_url, fallback_url = await _scrape_pinterest_image(url)
+    if originals_url:
+        try:
+            return await _generic_direct_download(originals_url, fallback_736x=fallback_url)
+        except ValueError as ex:
+            if fallback_url:
+                logger.info(f"originals failed ({ex}), trying 736x fallback")
+                return await _generic_direct_download(fallback_url)
+            raise
     raise ValueError("Pinterest: не удалось найти изображение на странице")
 
 
@@ -619,7 +628,7 @@ async def _scrape_pinterest_image(url):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
         async with s.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, allow_redirects=True) as resp:
             if resp.status != 200:
-                return None
+                return None, None
             html = await resp.text()
 
     og = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"', html, re.IGNORECASE)
@@ -627,13 +636,15 @@ async def _scrape_pinterest_image(url):
         og = re.search(r'<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"', html, re.IGNORECASE)
     if og:
         img = og.group(1).replace('&amp;', '&')
+        fallback = None
         if '/736x/' in img:
-            return img.replace('/736x/', '/originals/')
-        return img
+            fallback = img
+            img = img.replace('/736x/', '/originals/')
+        return img, fallback
 
     img_urls = re.findall(r'(https://i\.pinimg\.com/(?:originals|736x|1200x|474x|236x|170x)/[a-zA-Z0-9/_-]+\.(?:jpg|jpeg|png|gif|webp))', html)
     if not img_urls:
-        return None
+        return None, None
 
     seen = set()
     unique = []
@@ -647,18 +658,27 @@ async def _scrape_pinterest_image(url):
         for u in unique:
             if prefix in u:
                 if prefix != '/originals/':
+                    fallback = u
                     u = u.replace(prefix, '/originals/', 1)
-                return u
-    return unique[0]
+                    return u, fallback
+                return u, None
+    return unique[0], None
 
 
-async def _generic_direct_download(url):
+async def _generic_direct_download(url, *, referer='https://www.pinterest.com/', fallback_736x=None):
     ext = os.path.splitext(url.split('?')[0].split('/')[-1])[1]
     if not ext or ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.webm', '.mov'):
         ext = '.jpg'
     path = os.path.join(MEDIA_DIR, f'pin_{int(time.time())}{ext}')
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+        'Referer': referer,
+    }
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as s:
-        async with s.get(url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
+        async with s.get(url, headers=headers) as resp:
+            if resp.status == 403 and fallback_736x:
+                logger.info("originals blocked (403), fallback to 736x")
+                return await _generic_direct_download(fallback_736x, referer=referer)
             if resp.status != 200:
                 raise ValueError(f"HTTP {resp.status} при скачивании {url}")
             with open(path, 'wb') as f:
