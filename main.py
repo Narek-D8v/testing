@@ -931,12 +931,20 @@ async def weather_cmd(e):
     city = e.pattern_match.group(1).strip()
     msg = await respond(e, "⏳ Запрашиваю погоду...")
     try:
+        from urllib.parse import quote
         async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://wttr.in/{city.replace(' ', '+')}?format=j1",
+            async with s.get(f"https://wttr.in/{quote(city)}?format=j1",
                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status != 200:
+                    raise ConnectionError(f"HTTP {r.status}")
                 data = await r.json()
-        cc = data['current_condition'][0]
-        loc = data['nearest_area'][0]
+        cc = data.get('current_condition')
+        loc = data.get('nearest_area')
+        if not cc or not loc:
+            await msg.edit("❌ Город не найден. Попробуй на латинице или уточни (страна/регион).")
+            return
+        cc = cc[0]
+        loc = loc[0]
         city_name = loc['areaName'][0]['value']
         country = loc['country'][0]['value']
         temp = cc['temp_C']
@@ -951,8 +959,56 @@ async def weather_cmd(e):
             f"💨 Ветер: **{wind} км/ч**\n"
             f"📋 {desc}"
         )
-    except Exception:
-        await msg.edit("❌ Город не найден. Попробуй на латинице.")
+    except (aiohttp.ClientError, ConnectionError) as ex:
+        logger.warning(f"wttr.in failed: {ex}, trying Open-Meteo...")
+        async with aiohttp.ClientSession() as s:
+            geo_r = await s.get(
+                f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}&count=1",
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            if geo_r.status != 200:
+                await msg.edit("❌ Город не найден. Попробуй на латинице.")
+                return
+            geo = await geo_r.json()
+            results = geo.get('results')
+            if not results:
+                await msg.edit("❌ Город не найден. Попробуй на латинице.")
+                return
+            lat = results[0]['latitude']
+            lon = results[0]['longitude']
+            city_name = results[0].get('name', city)
+            country = results[0].get('country', '')
+            weather_r = await s.get(
+                f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+                f"wind_speed_10m,weather_code&timezone=auto",
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            if weather_r.status != 200:
+                await msg.edit("❌ Не удалось получить погоду. Попробуй позже.")
+                return
+            wdata = await weather_r.json()
+            cur = wdata.get('current', {})
+            temp = cur.get('temperature_2m', '?')
+            feels = cur.get('apparent_temperature', '?')
+            humidity = cur.get('relative_humidity_2m', '?')
+            wind = cur.get('wind_speed_10m', '?')
+            wcode = cur.get('weather_code', 0)
+            descs = {0:'Ясно', 1:'Преимущественно ясно', 2:'Переменная облачность', 3:'Пасмурно',
+                     45:'Туман', 48:'Иней', 51:'Морось', 53:'Морось', 55:'Морось',
+                     61:'Дождь', 63:'Дождь', 65:'Дождь', 71:'Снег', 73:'Снег', 75:'Снег',
+                     80:'Ливень', 81:'Ливень', 82:'Ливень', 95:'Гроза', 96:'Гроза', 99:'Гроза'}
+            desc = descs.get(wcode, f'Код {wcode}')
+            await msg.edit(
+                f"🌤 **Погода: {city_name}, {country}**\n\n"
+                f"🌡 Температура: **{temp}°C** (ощущается как {feels}°C)\n"
+                f"💧 Влажность: **{humidity}%**\n"
+                f"💨 Ветер: **{wind} км/ч**\n"
+                f"📋 {desc}"
+            )
+    except Exception as ex:
+        logger.warning(f"Weather error: {ex}", exc_info=True)
+        await msg.edit("❌ Ошибка получения погоды. Попробуй позже.")
     db.bump_stat('cmds')
 
 _translator = None
