@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 
+import aiohttp
 import yt_dlp
 
 from config import MEDIA_DIR, logger
@@ -21,7 +22,8 @@ if os.path.exists(_COOKIES_PATH):
     else:
         logger.warning("cookies.txt существует, но похож на неверный формат (нужен Netscape)")
 else:
-    logger.warning("cookies.txt не найден — YouTube может требовать авторизации")
+    logger.info("cookies.txt не найден — скачивание YouTube может не работать без авторизации")
+    logger.info("Создай cookies.txt из cookies.txt.example и заполни своими cookies YouTube")
 
 def _update_ytdlp():
     try:
@@ -59,7 +61,7 @@ _YT_DL_OPTS = {
     'retry_sleep': lambda n: 5 + n * 3,
     'throttledratelimit': 100000,
     'sleep_interval_requests': 2,
-    'js_runtimes': ['node', 'deno'],
+    'js_runtimes': {'node': {}, 'deno': {}},
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web'],
@@ -90,6 +92,66 @@ def set_max_file_size(mb: int):
     _max_file_size = mb
 
 
+_INVIDIOUS_INSTANCES = [
+    'inv.nadeko.net',
+    'yewtu.be',
+    'invidious.snopyta.org',
+    'inv.vern.cc',
+    'vid.puffyan.us',
+]
+
+
+def _yt_id(url):
+    m = re.search(r'(?:v=|youtu\.be/|list=)([a-zA-Z0-9_-]{11})', url)
+    return m.group(1) if m else None
+
+
+async def _try_invidious(url, mode):
+    video_id = _yt_id(url)
+    if not video_id:
+        return None
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+    for instance in _INVIDIOUS_INSTANCES:
+        try:
+            api_url = f"https://{instance}/api/v1/videos/{video_id}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+                async with s.get(api_url) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+            title = data.get('title', video_id)
+            formats = data.get('formatStreams', []) + data.get('adaptiveFormats', [])
+            if not formats:
+                continue
+            if mode == 'audio':
+                best = max((f for f in formats if f.get('encoding') and 'audio' in f.get('type', '') and f.get('bitrate')), key=lambda f: f['bitrate'], default=None)
+            else:
+                best = max((f for f in formats if f.get('encoding') and 'video' in f.get('type', '') and f.get('height')), key=lambda f: f['height'], default=None)
+                if not best:
+                    best = max(formats, key=lambda f: f.get('bitrate') or 0)
+            if not best or 'url' not in best:
+                continue
+            ext = best.get('container', 'mp4')
+            path = os.path.join(MEDIA_DIR, f"{video_id}_invidious.{ext}")
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as s:
+                async with s.get(best['url']) as resp:
+                    if resp.status != 200:
+                        continue
+                    with open(path, 'wb') as f:
+                        while True:
+                            chunk = await resp.content.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                logger.info(f"Invidious download OK: {title} ({instance})")
+                return path
+        except Exception as ex:
+            logger.warning(f"Invidious {instance} failed: {ex}")
+            continue
+    return None
+
+
 def _resolve_yt_path(ydl, info):
     filepath = None
     if info.get('requested_downloads'):
@@ -109,9 +171,12 @@ def _resolve_yt_path(ydl, info):
 
 def _probe_formats(url, opts):
     attempts = [
-        ('flat', {'extract_flat': True}),
-        ('web_client', {'extract_flat': True,
-                        'extractor_args': {'youtube': {'player_client': ['web']}}}),
+        ('android', {'extract_flat': True,
+                     'extractor_args': {'youtube': {'player_client': ['android'],
+                                                    'player_skip': ['js']}}}),
+        ('web', {'extract_flat': True,
+                 'extractor_args': {'youtube': {'player_client': ['web'],
+                                                'player_skip': ['js']}}}),
     ]
     for label, extra in attempts:
         probe_opts = dict(opts)
@@ -155,7 +220,9 @@ def _cli_download(url, output_path):
         '-o', output_path,
         '--no-playlist',
         '--no-check-certificates',
-        '--js-runtimes', 'node,deno',
+        '--js-runtimes', 'node',
+        '--js-runtimes', 'deno',
+
         url,
     ]
     try:
@@ -190,10 +257,17 @@ def _pick_format_and_download(url, opts, quality, is_audio):
             cli_result = _cli_download(url, cli_path)
             if cli_result:
                 return cli_result
+            cookie_hint = ""
+            if not _COOKIES_VALID:
+                cookie_hint = (
+                    "\n\n🔑 Для скачивания с YouTube с сервера нужны cookies.\n"
+                    "1. Установи расширение «Get cookies.txt» (Chrome)\n"
+                    "2. Зайди на youtube.com и экспортируй cookies\n"
+                    "3. Скопируй cookies.txt.example → cookies.txt, вставь свои cookies"
+                )
             raise ValueError(
-                "YouTube видео недоступно для скачивания. Возможные причины: "
-                "видео удалено, youtube заблокировал запрос (устаревший yt-dlp?), "
-                "требуется авторизация или видео недоступно в регионе сервера."
+                "YouTube видео недоступно для скачивания."
+                + cookie_hint
             )
 
     if _HAS_FFMPEG and is_audio:
@@ -330,6 +404,11 @@ async def run_download(event_edit_func, url, mode='video', quality=None, timeout
         return None
     except ValueError as ex:
         logger.warning(f"Download error: {ex}")
+        if is_youtube:
+            await event_edit_func("🔄 Пробую через Invidious...")
+            invidious_path = await _try_invidious(url, mode)
+            if invidious_path:
+                return invidious_path
         await event_edit_func(f"❌ {ex}")
         return None
     except Exception as ex:
