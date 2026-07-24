@@ -572,38 +572,84 @@ def _dl_generic_sync(url, opts):
 
 
 async def _download_pinterest_pin(url):
-    from pinterest_downloader import Pinterest
     try:
+        from pinterest_downloader import Pinterest
         p = Pinterest()
         pin = p.get_pin(url)
-        if not pin.get('ok'):
-            raise ValueError(f"Pinterest: {pin.get('message', 'не удалось получить данные')}")
-        pin_data = pin['pin']
-        media_type = pin_data.get('media_type', 'image')
-        if media_type == 'video':
-            video_info = pin_data.get('video') or {}
-            formats = video_info.get('formats') or []
-            if formats:
-                best = max(formats, key=lambda f: f.get('height', 0) or 0)
-                vid_url = best.get('url')
-                if vid_url:
-                    return await _generic_direct_download(vid_url)
-            poster = video_info.get('poster') or pin_data.get('media', {}).get('poster')
-            if poster:
-                return await _generic_direct_download(poster)
-        images = pin_data.get('images', {})
-        for key in ('orig', '736x', '474x', '236x', '170x'):
-            entry = images.get(key)
-            if entry and entry.get('url'):
-                return await _generic_direct_download(entry['url'])
-        embed = pin_data.get('embed') or {}
-        if embed.get('src'):
-            return await _generic_direct_download(embed['src'])
-        raise ValueError("Не удалось найти media URL в данных Pinterest")
-    except ValueError:
-        raise
+        if pin.get('ok'):
+            media_url = _extract_pin_media(pin['pin'])
+            if media_url:
+                return await _generic_direct_download(media_url)
+        logger.info("Pinterest library failed, falling back to HTML scrape")
     except Exception as ex:
-        raise ValueError(f"Pinterest: {ex}")
+        logger.warning(f"Pinterest library error: {ex}, falling back to HTML scrape")
+
+    img_url = await _scrape_pinterest_image(url)
+    if img_url:
+        return await _generic_direct_download(img_url)
+    raise ValueError("Pinterest: не удалось найти изображение на странице")
+
+
+def _extract_pin_media(pin_data):
+    media_type = pin_data.get('media_type', 'image')
+    if media_type == 'video':
+        video_info = pin_data.get('video') or {}
+        formats = video_info.get('formats') or []
+        if formats:
+            best = max(formats, key=lambda f: f.get('height', 0) or 0)
+            vid_url = best.get('url')
+            if vid_url:
+                return vid_url
+        poster = video_info.get('poster') or pin_data.get('media', {}).get('poster')
+        if poster:
+            return poster
+    images = pin_data.get('images', {})
+    for key in ('orig', '736x', '474x', '236x', '170x'):
+        entry = images.get(key)
+        if entry and entry.get('url'):
+            return entry['url']
+    embed = pin_data.get('embed') or {}
+    if embed.get('src'):
+        return embed['src']
+    return None
+
+
+async def _scrape_pinterest_image(url):
+    import aiohttp
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+        async with s.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, allow_redirects=True) as resp:
+            if resp.status != 200:
+                return None
+            html = await resp.text()
+
+    og = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"', html, re.IGNORECASE)
+    if not og:
+        og = re.search(r'<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"', html, re.IGNORECASE)
+    if og:
+        img = og.group(1).replace('&amp;', '&')
+        if '/736x/' in img:
+            return img.replace('/736x/', '/originals/')
+        return img
+
+    img_urls = re.findall(r'(https://i\.pinimg\.com/(?:originals|736x|1200x|474x|236x|170x)/[a-zA-Z0-9/_-]+\.(?:jpg|jpeg|png|gif|webp))', html)
+    if not img_urls:
+        return None
+
+    seen = set()
+    unique = []
+    for u in img_urls:
+        n = u.rstrip(')')
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+
+    for prefix in ('/originals/', '/1200x/', '/736x/', '/474x/', '/236x/', '/170x/'):
+        for u in unique:
+            if prefix in u:
+                if prefix != '/originals/':
+                    u = u.replace(prefix, '/originals/', 1)
+                return u
+    return unique[0]
 
 
 async def _generic_direct_download(url):
