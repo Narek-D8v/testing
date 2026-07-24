@@ -3,8 +3,6 @@ import base64
 import datetime
 import hashlib
 import json
-import logging
-import math
 import os
 import random
 import re
@@ -12,17 +10,17 @@ import string
 import time
 import uuid
 from collections import defaultdict
-from threading import Thread
 
 import aiohttp
-import requests
+from duckduckgo_search import DDGS
 from flask import Flask
-import yt_dlp
+from deep_translator import GoogleTranslator
+from PIL import Image, ImageDraw
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 from telethon.tl.functions.account import (
-    GetAuthorizationsRequest, UpdateProfileRequest, UpdateStatusRequest,
+    GetAuthorizationsRequest,
 )
 from telethon.tl.functions.messages import SendReactionRequest
 from telethon.tl.types import (
@@ -30,48 +28,26 @@ from telethon.tl.types import (
     ReactionEmoji,
 )
 
+import qrcode
+
+from config import (
+    API_ID, API_HASH, PORT, STRING_SESSION, OWNER_ID,
+    MEDIA_DIR, MAX_COOLDOWN_ENTRIES,
+    MAX_FILE_SIZE_MB, logger,
+)
+from utils import fmt_time, progress_bar, safe_eval, caesar, morse_enc, gen_pwd, vigenere
+from downloaders import run_download, send_and_clean, set_max_file_size
 from rp_commands import (
     RP_COMMANDS, format_rp_action, get_all_categories,
     get_category_commands, get_rp_reply,
 )
 from storage import Storage
 
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-API_ID = os.environ.get('API_ID')
-API_HASH = os.environ.get('API_HASH')
-PORT = int(os.environ.get('PORT', 8080))
-STRING_SESSION = os.environ.get('STRING_SESSION')
-OWNER_ID = int(os.environ.get('OWNER_ID', '5457847440'))
-HIBP_API_KEY = os.environ.get('HIBP_API_KEY', '')
-MEDIA_DIR = os.environ.get('MEDIA_DIR', './media')
+set_max_file_size(MAX_FILE_SIZE_MB)
 
 db = Storage()
+_log = logger
 
-def fmt_time(s):
-    s = int(s)
-    d, s = divmod(s, 86400)
-    h, s = divmod(s, 3600)
-    m, s = divmod(s, 60)
-    parts = []
-    if d: parts.append(f"{d}д")
-    if h: parts.append(f"{h}ч")
-    if m: parts.append(f"{m}м")
-    if s or not parts: parts.append(f"{s}с")
-    return " ".join(parts)
-
-def progress_bar(val, mx, width=10):
-    filled = int(width * val / max(mx, 1))
-    return "█" * filled + "░" * (width - filled)
-
-def check_cover(event):
-    if state.cover_enabled:
-        text = event.raw_text or ''
-        if not text.startswith('!cover') and not text.startswith('!status_reset'):
-            return True
-    return False
 
 class BotState:
     def __init__(self):
@@ -97,7 +73,7 @@ class BotState:
         self.autodel_enabled = db.get_state('autodel_enabled', 'False') == 'True'
         self.autodel_delay = int(db.get_state('autodel_delay', '10'))
         self.reply_delay = int(db.get_state('reply_delay', '0'))
-        self.readreceipt_enabled = db.get_state('readreceipt_enabled', 'True') == 'True'
+        self.readreceipt_enabled = db.get_state('readreceipt_enabled', 'False') == 'True'
         raw_sudo = db.get_state('sudo_users', '')
         self.sudo_users = set(int(x) for x in raw_sudo.split(',') if x.strip())
 
@@ -224,13 +200,16 @@ class BotState:
 state = BotState()
 command_cooldown = defaultdict(float)
 reply_cooldown = {}
-MAX_COOLDOWN_ENTRIES = 500
 _download_lock = asyncio.Lock()
 _watch_task = None
 _protect_task = None
 
 
 def owner_filter(event):
+    if state.cover_enabled:
+        text = event.raw_text or ''
+        if not text.startswith('!cover') and not text.startswith('!status_reset'):
+            return False
     return event.sender_id == OWNER_ID or event.sender_id in state.sudo_users
 
 
@@ -242,462 +221,6 @@ async def respond(event, text, **kwargs):
             return None
     return await event.reply(text, **kwargs)
 
-
-def format_bytes(n):
-    n = float(n)
-    for unit in ('Б', 'КБ', 'МБ', 'ГБ'):
-        if abs(n) < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} ТБ"
-
-_COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
-_COOKIES_VALID = False
-if os.path.exists(_COOKIES_PATH):
-    with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
-        content = f.read()
-    if '.youtube.com' in content and ('\tTRUE\t' in content or 'cookie' in content.lower()):
-        _COOKIES_VALID = True
-        logger.info(f"cookies.txt: {len(content)} байт, формат OK")
-    else:
-        logger.warning("cookies.txt существует, но похож на неверный формат (нужен Netscape)")
-else:
-    logger.warning("cookies.txt не найден — YouTube может требовать авторизации")
-
-try:
-    logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
-except Exception:
-    logger.info("yt-dlp version: unknown")
-
-_YT_DL_OPTS = {
-    'outtmpl': os.path.join(MEDIA_DIR, '%(id)s.%(ext)s'),
-    'quiet': True,
-    'no_warnings': True,
-    'noplaylist': True,
-    'extractor_retries': 5,
-    'fragment_retries': 5,
-    'retry_sleep': lambda n: 5 + n * 3,
-    'throttledratelimit': 100000,
-    'sleep_interval_requests': 2,
-    'cookiefile': _COOKIES_PATH if _COOKIES_VALID else None,
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                       '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-    },
-}
-
-_HAS_FFMPEG = False
-try:
-    import subprocess
-    subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-    _HAS_FFMPEG = True
-except Exception:
-    pass
-
-
-def _resolve_yt_path(ydl, info):
-    filepath = None
-    if info.get('requested_downloads'):
-        filepath = info['requested_downloads'][0].get('filepath')
-    if not filepath or not os.path.exists(filepath or ''):
-        filepath = ydl.prepare_filename(info)
-    if filepath and os.path.exists(filepath):
-        return filepath
-    video_id = info.get('id')
-    if video_id:
-        pattern = os.path.join(MEDIA_DIR, f'{video_id}.*')
-        import glob
-        matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-        if matches:
-            return matches[0]
-    raise ValueError("Файл не найден после загрузки (возможно, проблема с ffmpeg пост-обработкой)")
-
-
-def _probe_formats(url, opts):
-    attempts = [
-        ('flat', {'extract_flat': True}),
-        ('web_client', {'extract_flat': True,
-                        'extractor_args': {'youtube': {'player_client': ['web']}}}),
-    ]
-    for label, extra in attempts:
-        probe_opts = dict(opts)
-        probe_opts.pop('format', None)
-        probe_opts.pop('extractor_args', None)
-        probe_opts['skip_download'] = True
-        probe_opts.update(extra)
-        try:
-            with yt_dlp.YoutubeDL(probe_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                logger.info(f"YouTube probe [{label}]: id={info.get('id', '?')}, "
-                            f"title=\"{info.get('title', '?')[:80]}\", "
-                            f"channel={info.get('channel', '?')}")
-                if info.get('title'):
-                    return info
-        except yt_dlp.utils.DownloadError as ex:
-            logger.warning(f"Probe [{label}] failed: {ex}")
-            continue
-        except Exception as ex:
-            logger.warning(f"Probe [{label}] unexpected: {ex}")
-            continue
-    _dl_diag(url)
-    return None
-
-
-def _dl_diag(url):
-    try:
-        import subprocess, sys
-        result = subprocess.run(
-            [sys.executable, '-m', 'yt_dlp', '--verbose', '--flat-playlist', '-J', '--no-check-certificates', url],
-            capture_output=True, text=True, timeout=60
-        )
-        logger.info(f"yt-dlp CLI stdout: {result.stdout[:500]}")
-        logger.info(f"yt-dlp CLI stderr: {result.stderr[:500]}")
-    except Exception as ex:
-        logger.error(f"yt-dlp CLI diag failed: {ex}")
-
-
-def _cli_download(url, output_path):
-    """Fallback: yt-dlp через subprocess если Python API не работает"""
-    import subprocess, sys
-    cmd = [
-        sys.executable, '-m', 'yt_dlp',
-        '-f', 'best',
-        '-o', output_path,
-        '--no-playlist',
-        '--no-check-certificates',
-        url,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode == 0:
-            import glob
-            matches = sorted(glob.glob(output_path.replace('%(ext)s', '*')), key=os.path.getmtime, reverse=True)
-            if matches:
-                return matches[0]
-            stderr_lower = result.stderr.lower()
-            import re
-            m = re.search(r'\[download\]\s+(.+?)\s+has already been downloaded', result.stderr, re.IGNORECASE)
-            if m:
-                return m.group(1).strip()
-        logger.error(f"CLI download failed (rc={result.returncode}): {result.stderr[:300]}")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.error("CLI download timed out")
-        return None
-    except Exception as ex:
-        logger.error(f"CLI download error: {ex}")
-        return None
-
-
-def _pick_format_and_download(url, opts, quality, is_audio):
-    os.makedirs(MEDIA_DIR, exist_ok=True)
-
-    if not _HAS_FFMPEG:
-        probe = _probe_formats(url, opts)
-        if probe is None:
-            logger.warning("Python API probe failed, trying CLI fallback...")
-            ext = 'mp3' if is_audio else 'mp4'
-            cli_path = os.path.join(MEDIA_DIR, f'%(id)s.{ext}')
-            cli_result = _cli_download(url, cli_path)
-            if cli_result:
-                return cli_result
-            raise ValueError(
-                "YouTube видео недоступно для скачивания. Возможные причины: "
-                "видео удалено, youtube заблокировал запрос (устаревший yt-dlp?), "
-                "требуется авторизация или видео недоступно в регионе сервера."
-            )
-
-    if _HAS_FFMPEG and is_audio:
-        opts['format'] = 'bestaudio/best'
-        opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-    elif _HAS_FFMPEG and not is_audio:
-        opts['format'] = 'bestvideo+bestaudio/best'
-        if quality:
-            opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
-        opts['merge_output_format'] = 'mp4'
-    else:
-        if is_audio:
-            formats_to_try = ['bestaudio', 'best']
-        else:
-            formats_to_try = ['best', 'bestvideo']
-
-        last_ex = None
-        for fmt in formats_to_try:
-            opts['format'] = fmt
-            try:
-                logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    return _resolve_yt_path(ydl, info)
-            except yt_dlp.utils.DownloadError as ex:
-                last_ex = ex
-                continue
-        raise ValueError(f"YouTube: {last_ex}")
-
-    logger.info(f'yt-dlp opts: format={opts.get("format")}, ffmpeg={_HAS_FFMPEG}')
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return _resolve_yt_path(ydl, info)
-
-
-async def _download_yt_video(url, quality=None):
-    def _dl():
-        try:
-            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality, is_audio=False)
-        except yt_dlp.utils.DownloadError as ex:
-            raise ValueError(f"YouTube: {ex}")
-        except ValueError:
-            raise
-        except Exception as ex:
-            logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
-            raise ValueError(f"YouTube: {ex}")
-
-    return await asyncio.to_thread(_dl)
-
-
-async def _download_yt_audio(url):
-    def _dl():
-        try:
-            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality=None, is_audio=True)
-        except yt_dlp.utils.DownloadError as ex:
-            raise ValueError(f"YouTube: {ex}")
-        except ValueError:
-            raise
-        except Exception as ex:
-            logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
-            raise ValueError(f"YouTube: {ex}")
-
-    return await asyncio.to_thread(_dl)
-
-
-async def _download_instagram_video(url):
-    shortcode_match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
-    if not shortcode_match:
-        raise ValueError("Неверная ссылка Instagram")
-
-    def _dl():
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            html = resp.text
-        except requests.RequestException as ex:
-            raise ValueError(f"Ошибка загрузки страницы Instagram: {ex}")
-
-        video_url = None
-        patterns = [
-            r'<meta\s+property="og:video"\s+content="([^"]+)"',
-            r'"video_url":"([^"]+)"',
-            r'"video_download_url":"([^"]+)"',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
-                break
-
-        if not video_url:
-            match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});', html, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group(1))
-                    for k, v in data.items():
-                        if isinstance(v, dict):
-                            if 'video_url' in v:
-                                video_url = v['video_url']
-                                break
-                            for k2, v2 in v.items():
-                                if isinstance(v2, dict) and 'video_url' in v2:
-                                    video_url = v2['video_url']
-                                    break
-                            if video_url:
-                                break
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass
-
-        if not video_url:
-            raise ValueError("Не удалось найти видео на странице Instagram")
-
-        try:
-            vr = requests.get(video_url, headers=headers, timeout=60)
-            vr.raise_for_status()
-        except requests.RequestException as ex:
-            raise ValueError(f"Ошибка загрузки видео: {ex}")
-
-        try:
-            path = os.path.join(MEDIA_DIR, f'instagram_{int(time.time())}.mp4')
-            with open(path, 'wb') as f:
-                f.write(vr.content)
-            return path
-        except OSError as ex:
-            raise ValueError(f"Ошибка сохранения файла: {ex}")
-    return await asyncio.to_thread(_dl)
-
-
-async def _download_tiktok_video(url):
-    def _dl():
-        sess = requests.Session()
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-        }
-        try:
-            resp = sess.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            html = resp.text
-        except requests.RequestException as ex:
-            raise ValueError(f"Ошибка загрузки страницы TikTok: {ex}")
-
-        video_url = None
-        patterns = [
-            r'"downloadAddr":"([^"]+)"',
-            r'"playAddr":"([^"]+)"',
-            r'"play":"([^"]+)"',
-            r'<video[^>]+src="([^"]+)"',
-            r'"url_list":\["([^"]+)"\]',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
-                if video_url.startswith('//'):
-                    video_url = 'https:' + video_url
-                break
-
-        if not video_url:
-            match = re.search(r'"video":{"videoUrl":{"urlList":\["([^"]+)"', html)
-            if match:
-                video_url = match.group(1).replace('\\/', '/').replace('\\u002F', '/')
-
-        if not video_url:
-            raise ValueError("Не удалось найти видео на странице TikTok")
-
-        dl_headers = {
-            'User-Agent': headers['User-Agent'],
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': '*/*',
-            'Referer': url,
-            'Origin': 'https://www.tiktok.com',
-            'Sec-Fetch-Dest': 'video',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'same-site',
-        }
-        try:
-            vr = sess.get(video_url, headers=dl_headers, timeout=60)
-            vr.raise_for_status()
-        except requests.RequestException as ex:
-            raise ValueError(f"Ошибка загрузки видео TikTok: {ex}")
-
-        try:
-            path = os.path.join(MEDIA_DIR, f'tiktok_{int(time.time())}.mp4')
-            with open(path, 'wb') as f:
-                f.write(vr.content)
-            return path
-        except OSError as ex:
-            raise ValueError(f"Ошибка сохранения файла: {ex}")
-
-    return await asyncio.to_thread(_dl)
-
-
-async def _run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
-    if _download_lock.locked():
-        await event_edit_func("⏳ Уже идёт загрузка, встаю в очередь...")
-    async with _download_lock:
-        logger.info(f"[download] Starting: {url} (mode={mode})")
-        try:
-            is_instagram = 'instagram.com' in url.lower()
-            is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
-            is_tiktok = 'tiktok.com' in url.lower()
-
-            if is_tiktok:
-                await event_edit_func("📥 Скачиваю из TikTok...")
-                filename = await asyncio.wait_for(
-                    _download_tiktok_video(url), timeout=timeout
-                )
-            elif is_instagram:
-                await event_edit_func("📥 Скачиваю из Instagram...")
-                filename = await asyncio.wait_for(
-                    _download_instagram_video(url), timeout=timeout
-                )
-            elif is_youtube:
-                if mode == 'audio':
-                    await event_edit_func("🎵 Скачиваю аудио...")
-                    filename = await asyncio.wait_for(
-                        _download_yt_audio(url), timeout=timeout
-                    )
-                else:
-                    qual = f"{quality}p" if quality else None
-                    await event_edit_func(f"📥 Скачиваю видео ({qual or 'авто'})...")
-                    filename = await asyncio.wait_for(
-                        _download_yt_video(url, quality), timeout=timeout
-                    )
-            else:
-                await event_edit_func("❌ Поддерживаются: YouTube, Instagram, TikTok.")
-                return None
-
-            if filename and os.path.exists(filename):
-                size = format_bytes(os.path.getsize(filename))
-                logger.info(f"[download] OK: {filename} ({size})")
-                return filename
-            logger.warning(f"[download] file not found after download: {url}")
-            return None
-        except asyncio.TimeoutError:
-            await event_edit_func("❌ Превышено время ожидания (10 мин).")
-            logger.warning(f"Download timeout: {url}")
-            return None
-        except ValueError as ex:
-            logger.warning(f"Download error: {ex}")
-            await event_edit_func(f"❌ {ex}")
-            return None
-        except Exception as ex:
-            logger.error(f"Download error: {ex}", exc_info=True)
-            await event_edit_func(f"❌ **Ошибка:** {ex}")
-            return None
-
-
-async def _send_and_clean(event_edit_func, chat_id, filepath, caption=''):
-    if not filepath or not os.path.exists(filepath):
-        return
-    try:
-        size_mb = os.path.getsize(filepath) / 1024 / 1024
-    except OSError:
-        return
-    if size_mb > 1500:
-        await event_edit_func("❌ Слишком большой файл (>1.5 ГБ).")
-    else:
-        await event_edit_func("📤 **Отправляю файл...**")
-        try:
-            await client.send_file(chat_id, filepath, caption=caption)
-        except FloodWaitError as fwe:
-            logger.warning(f"FloodWait при отправке: {fwe.seconds}s")
-            await asyncio.sleep(fwe.seconds + 1)
-            try:
-                await client.send_file(chat_id, filepath, caption=caption)
-            except Exception as ex2:
-                await event_edit_func(f"❌ Ошибка отправки: {ex2}")
-        except Exception as ex:
-            await event_edit_func(f"❌ Ошибка отправки: {ex}")
-    await asyncio.sleep(5)
-    for _ in range(3):
-        try:
-            os.remove(filepath)
-            break
-        except OSError:
-            await asyncio.sleep(1)
 
 def create_client():
     if STRING_SESSION:
@@ -714,25 +237,25 @@ def home():
     return "🤖 UserBot работает 24/7!"
 
 def run_web():
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='127.0.0.1', port=PORT)
 
 @client.on(events.NewMessage(pattern=r'!sleep$', func=owner_filter))
 async def sleep_cmd(e):
-    if check_cover(e): return
+
     state.toggle_auto_reply(True)
     await respond(e, '💤 Автоответчик **ВКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!wake$', func=owner_filter))
 async def wake_cmd(e):
-    if check_cover(e): return
+
     state.toggle_auto_reply(False)
     await respond(e, '☀️ Автоответчик **ВЫКЛЮЧЕН**.')
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!setreply(?:\s+(@\w+))?(?:\s+(.+))?', func=owner_filter))
 async def setreply_cmd(e):
-    if check_cover(e): return
+
     g = e.pattern_match
     target, text = g.group(1), g.group(2)
     if target and target.lower() == '@default':
@@ -750,7 +273,7 @@ async def setreply_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!status$', func=owner_filter))
 async def status_cmd(e):
-    if check_cover(e): return
+
     me = await client.get_me()
     dialogs = await client.get_dialogs()
     s = db.all_stats()
@@ -779,7 +302,7 @@ async def status_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!time$', func=owner_filter))
 async def time_cmd(e):
-    if check_cover(e): return
+
     now = datetime.datetime.now()
     utc = datetime.datetime.utcnow()
     week_days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
@@ -794,7 +317,7 @@ async def time_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!ping$', func=owner_filter))
 async def ping_cmd(e):
-    if check_cover(e): return
+
     t0 = time.monotonic()
     await respond(e, "🏓 ...")
     ms = (time.monotonic() - t0) * 1000
@@ -804,7 +327,7 @@ async def ping_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!id$', func=owner_filter))
 async def id_cmd(e):
-    if check_cover(e): return
+
     chat = await e.get_chat()
     lines = [f"🆔 **ID чата:** `{chat.id}`"]
     if e.reply_to_msg_id:
@@ -823,7 +346,7 @@ async def id_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!info$', func=owner_filter))
 async def info_cmd(e):
-    if check_cover(e): return
+
     me = await client.get_me()
     dialogs = await client.get_dialogs()
     await respond(e, 
@@ -840,7 +363,7 @@ async def info_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!restart$', func=owner_filter))
 async def restart_cmd(e):
-    if check_cover(e): return
+
     await respond(e, '🔄 Перезагрузка...')
     await asyncio.sleep(2)
     await client.disconnect()
@@ -848,7 +371,7 @@ async def restart_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!ghost$', func=owner_filter))
 async def ghost_cmd(e):
-    if check_cover(e): return
+
     state.toggle_ghost()
     if state.ghost_mode:
         await respond(e, "👻 **Ghost-режим ВКЛЮЧЁН** — команды удаляются мгновенно")
@@ -919,7 +442,7 @@ async def mute_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!typing(?:\s+(on|off))?$', func=owner_filter))
 async def typing_cmd(e):
-    if check_cover(e): return
+
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_typing(False)
@@ -931,7 +454,7 @@ async def typing_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!autodel(?:\s+(on|off))?(?:\s+(\d+))?$', func=owner_filter))
 async def autodel_cmd(e):
-    if check_cover(e): return
+
     arg = e.pattern_match.group(1)
     delay_str = e.pattern_match.group(2)
     if arg == 'off':
@@ -945,7 +468,7 @@ async def autodel_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!delay\s+(\d+)', func=owner_filter))
 async def delay_cmd(e):
-    if check_cover(e): return
+
     sec = int(e.pattern_match.group(1))
     state.set_reply_delay(min(sec, 30))
     if state.reply_delay > 0:
@@ -956,7 +479,7 @@ async def delay_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!readreceipt(?:\s+(on|off))?$', func=owner_filter))
 async def readreceipt_cmd(e):
-    if check_cover(e): return
+
     arg = e.pattern_match.group(1)
     if arg == 'off':
         state.set_readreceipt(False)
@@ -968,7 +491,7 @@ async def readreceipt_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!sudo(?:\s+(on|off)\s+(\S+))?\s*$', func=owner_filter))
 async def sudo_cmd(e):
-    if check_cover(e): return
+
     g = e.pattern_match
     action = g.group(1)
     target = g.group(2)
@@ -1003,26 +526,6 @@ async def sudo_cmd(e):
         await respond(e, f"👑 **{name}** удалён из sudo.")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!online$', func=owner_filter))
-async def online_cmd(e):
-    if check_cover(e): return
-    try:
-        await client(UpdateStatusRequest(offline=False))
-        await respond(e, "🟢 Статус: **Онлайн**")
-    except Exception as ex:
-        await respond(e, f"❌ Ошибка: {ex}")
-    db.bump_stat('cmds')
-
-@client.on(events.NewMessage(pattern=r'!offline$', func=owner_filter))
-async def offline_cmd(e):
-    if check_cover(e): return
-    try:
-        await client(UpdateStatusRequest(offline=True))
-        await respond(e, "🔴 Статус: **Недавно был(а)**")
-    except Exception as ex:
-        await respond(e, f"❌ Ошибка: {ex}")
-    db.bump_stat('cmds')
-
 @client.on(events.NewMessage(pattern=r'!status_reset$', func=owner_filter))
 async def status_reset_cmd(e):
     state.reset_stealth()
@@ -1031,7 +534,7 @@ async def status_reset_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!me$', func=owner_filter))
 async def me_cmd(e):
-    if check_cover(e): return
+
     me = await client.get_me()
     photos = await client.get_profile_photos(me.id, limit=1)
     await respond(e, 
@@ -1048,7 +551,7 @@ async def me_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!avatar$', func=owner_filter))
 async def avatar_cmd(e):
-    if check_cover(e): return
+
     if e.reply_to_msg_id:
         r = await e.get_reply_message()
         uid = r.sender_id
@@ -1064,7 +567,7 @@ async def avatar_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!name (.+)', func=owner_filter))
 async def name_cmd(e):
-    if check_cover(e): return
+
     n = e.pattern_match.group(1).strip()
     await client.edit_profile(first_name=n)
     await respond(e, f"✅ Имя → **{n}**")
@@ -1072,7 +575,7 @@ async def name_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!lastname(?:\s+(.+))?$', func=owner_filter))
 async def lastname_cmd(e):
-    if check_cover(e): return
+
     n = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(last_name=n)
     await respond(e, f"✅ Фамилия → **{n}**" if n else "✅ Фамилия удалена")
@@ -1080,7 +583,7 @@ async def lastname_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!bio(?:\s+(.+))?$', func=owner_filter))
 async def bio_cmd(e):
-    if check_cover(e): return
+
     t = (e.pattern_match.group(1) or '').strip()
     await client.edit_profile(about=t)
     await respond(e, f"✅ Био → _{t}_" if t else "✅ Био очищено")
@@ -1088,7 +591,7 @@ async def bio_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!whois (.+)', func=owner_filter))
 async def whois_cmd(e):
-    if check_cover(e): return
+
     target = e.pattern_match.group(1).strip().lstrip('@')
     try:
         ent = await client.get_entity(target)
@@ -1111,7 +614,7 @@ async def whois_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!username_check (.+)', func=owner_filter))
 async def username_check_cmd(e):
-    if check_cover(e): return
+
     uname = e.pattern_match.group(1).strip().lstrip('@')
     try:
         ent = await client.get_entity(uname)
@@ -1123,49 +626,49 @@ async def username_check_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!dice$', func=owner_filter))
 async def dice_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎲'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!dart$', func=owner_filter))
 async def dart_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎯'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!basket$', func=owner_filter))
 async def basket_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🏀'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!football$', func=owner_filter))
 async def football_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('⚽'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!bowling$', func=owner_filter))
 async def bowling_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎳'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!casino$', func=owner_filter))
 async def casino_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, file=InputMediaDice('🎰'))
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!coin$', func=owner_filter))
 async def coin_cmd(e):
-    if check_cover(e): return
+
     sides = ["Орёл 🦅", "Решка 💰"]
     r = random.choice(sides)
     flips = random.randint(3, 9)
@@ -1174,7 +677,7 @@ async def coin_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!rand(?:\s+(-?\d+)(?:\s+(-?\d+))?)?$', func=owner_filter))
 async def rand_cmd(e):
-    if check_cover(e): return
+
     g = e.pattern_match
     a, b = g.group(1), g.group(2)
     if a and b:
@@ -1188,7 +691,7 @@ async def rand_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!8ball(?:\s+(.+))?$', func=owner_filter))
 async def eightball_cmd(e):
-    if check_cover(e): return
+
     ANSWERS = {
         'pos': [
             ("Определённо да", "✅", "Вселенная согласна с тобой."),
@@ -1253,7 +756,7 @@ async def eightball_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!rps(?:\s+(.+))?$', func=owner_filter))
 async def rps_cmd(e):
-    if check_cover(e): return
+
     MAP = {'к': '🪨 Камень', 'камень': '🪨 Камень', 'н': '✂️ Ножницы', 'ножницы': '✂️ Ножницы', 'б': '📄 Бумага', 'бумага': '📄 Бумага'}
     BOT = ['🪨 Камень', '✂️ Ножницы', '📄 Бумага']
     WIN = {'🪨 Камень': '✂️ Ножницы', '✂️ Ножницы': '📄 Бумага', '📄 Бумага': '🪨 Камень'}
@@ -1273,7 +776,7 @@ async def rps_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!slot$', func=owner_filter))
 async def slot_cmd(e):
-    if check_cover(e): return
+
     SYM = ['🍒', '🍋', '🍊', '🍇', '🍉', '⭐', '💎', '7️⃣', '🔔', '🍀']
     msg = await respond(e, "🎰 [ ▓ | ▓ | ▓ ]")
     for _ in range(4):
@@ -1292,7 +795,7 @@ async def slot_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!lucky$', func=owner_filter))
 async def lucky_cmd(e):
-    if check_cover(e): return
+
     pct = random.randint(0, 100)
     bar = progress_bar(pct, 100, 12)
     tips = {
@@ -1309,7 +812,7 @@ async def lucky_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!choose (.+)', func=owner_filter))
 async def choose_cmd(e):
-    if check_cover(e): return
+
     raw = e.pattern_match.group(1)
     opts = [o.strip() for o in re.split(r'[,|/]', raw) if o.strip()]
     if len(opts) < 2:
@@ -1322,7 +825,7 @@ async def choose_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!quiz$', func=owner_filter))
 async def quiz_cmd(e):
-    if check_cover(e): return
+
     QUESTIONS = [
         ("Столица Австралии?", ["Сидней", "Мельбурн", "Канберра", "Перт"], 2),
         ("Сколько планет в Солнечной системе?", ["7", "8", "9", "10"], 1),
@@ -1343,84 +846,13 @@ async def quiz_cmd(e):
     )
     db.bump_stat('cmds')
 
-async def safe_eval(expr: str):
-    func_map = {
-        'sqrt': 'math.sqrt', 'sin': 'math.sin', 'cos': 'math.cos', 'tan': 'math.tan',
-        'log': 'math.log', 'log2': 'math.log2', 'log10': 'math.log10',
-        'abs': 'abs', 'pow': 'pow', 'floor': 'math.floor', 'ceil': 'math.ceil',
-        'round': 'round', 'pi': 'math.pi', 'e': 'math.e',
-        'factorial': 'math.factorial', 'gcd': 'math.gcd', 'hypot': 'math.hypot',
-    }
-    safe = expr.strip()
-    for k, v in func_map.items():
-        safe = re.sub(rf'\b{k}\b', v, safe)
-    if any(w in safe for w in ['import', 'os', 'sys', 'open', 'exec', 'eval', '__']):
-        return None
-    ns = {'__builtins__': {}, 'math': math, 'abs': abs, 'pow': pow, 'round': round}
-    try:
-        r = eval(safe, ns, {})
-        if isinstance(r, float):
-            if math.isinf(r) or math.isnan(r):
-                return "∞"
-            return round(r, 10)
-        return r
-    except Exception:
-        return None
-
-def caesar(text, shift, dec=False):
-    if dec:
-        shift = -shift
-    out = []
-    for c in text:
-        if 'А' <= c <= 'я' or c in 'ёЁ':
-            base = ord('А' if c.isupper() or c == 'Ё' else 'а')
-            size = 33
-            out.append(chr((ord(c) - base + shift) % size + base))
-        elif c.isalpha():
-            base = ord('A' if c.isupper() else 'a')
-            out.append(chr((ord(c) - base + shift) % 26 + base))
-        else:
-            out.append(c)
-    return ''.join(out)
-
-_MORSE = {
-    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
-    'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
-    'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
-    'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
-    'Y': '-.--', 'Z': '--..',
-    '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
-    '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
-    ' ': '/'
-}
-
-def morse_enc(t):
-    return ' '.join(_MORSE.get(c.upper(), '?') for c in t)
-
-def gen_pwd(n=16, sym=True):
-    pool = string.ascii_letters + string.digits + ("!@#$%^&*()-_=+[]{}|;:,.<>?" if sym else "")
-    return ''.join(random.SystemRandom().choice(pool) for _ in range(n))
-
-def vigenere(text, key, dec=False):
-    key = key.upper()
-    out, ki = [], 0
-    for c in text:
-        if c.isalpha():
-            shift = ord(key[ki % len(key)]) - ord('A')
-            if dec:
-                shift = -shift
-            base = ord('A' if c.isupper() else 'a')
-            out.append(chr((ord(c) - base + shift) % 26 + base))
-            ki += 1
-        else:
-            out.append(c)
-    return ''.join(out)
+# (functions moved to utils.py: safe_eval, caesar, morse_enc, gen_pwd, vigenere)
 
 @client.on(events.NewMessage(pattern=r'!calc (.+)', func=owner_filter))
 async def calc_cmd(e):
-    if check_cover(e): return
+
     expr = e.pattern_match.group(1).strip()
-    r = await safe_eval(expr)
+    r = safe_eval(expr)
     if r is not None:
         await respond(e, f"🧮 `{expr}` = **{r}**")
     else:
@@ -1436,7 +868,7 @@ async def send_reminder(chat_id, msg_text, delay):
 
 @client.on(events.NewMessage(pattern=r'!remind (\d+)\s+(.+)', func=owner_filter))
 async def remind_cmd(e):
-    if check_cover(e): return
+
     delay = int(e.pattern_match.group(1))
     text = e.pattern_match.group(2).strip()
     await respond(e, f"⏰ Напоминание через **{fmt_time(delay)}**\n📝 _{text}_")
@@ -1445,65 +877,102 @@ async def remind_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!search (.+)', func=owner_filter))
 async def search_cmd(e):
-    if check_cover(e): return
-    q = e.pattern_match.group(1).strip()
-    enc = q.replace(' ', '+')
-    await respond(e, 
-        f"🔍 **{q}**\n\n"
-        f"• [Google](https://www.google.com/search?q={enc})\n"
-        f"• [DuckDuckGo](https://duckduckgo.com/?q={enc})\n"
-        f"• [YouTube](https://www.youtube.com/results?search_query={enc})\n"
-        f"• [Wikipedia](https://ru.wikipedia.org/wiki/Special:Search?search={enc})"
-    )
+
+    query = e.pattern_match.group(1).strip()
+    msg = await respond(e, "⏳ Ищу...")
+    try:
+        results = await asyncio.to_thread(
+            lambda: list(DDGS().text(query, max_results=5))
+        )
+        if not results:
+            await msg.edit("❌ Ничего не найдено.")
+            return
+        lines = [f"🔍 **Результаты:** _{query}_\n"]
+        for i, r in enumerate(results[:5], 1):
+            title = r.get('title', '?')
+            href = r.get('href', '')
+            body = (r.get('body', '') or '')[:120]
+            lines.append(f"{i}. [{title}]({href})")
+            if body:
+                lines.append(f"   _{body}{\"...\" if len(r.get('body', '')) > 120 else ''}_")
+        await msg.edit("\n".join(lines))
+    except Exception as ex:
+        await msg.edit(f"❌ Ошибка поиска: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!shorten (.+)', func=owner_filter))
 async def shorten_cmd(e):
-    if check_cover(e): return
+
     url = e.pattern_match.group(1).strip()
-    await respond(e, "⏳ Сокращаю...")
+    msg = await respond(e, "⏳ Сокращаю...")
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://tinyurl.com/api-create.php?url={url}",
+            async with s.get("https://is.gd/create.php",
+                             params={"format": "json", "url": url},
                              timeout=aiohttp.ClientTimeout(total=10)) as r:
-                short = await r.text()
-        if short.startswith('http'):
-            await respond(e, f"✂️ **Оригинал:** `{url[:55]}{'…' if len(url) > 55 else ''}`\n🔗 **Короткая:** {short.strip()}")
+                data = await r.json()
+        if 'shorturl' in data:
+            await msg.edit(f"✂️ **Оригинал:** `{url[:55]}{'…' if len(url) > 55 else ''}`\n🔗 **Короткая:** {data['shorturl']}")
         else:
-            raise Exception()
+            await msg.edit(f"❌ Ошибка: {data.get('errormessage', 'Неверный URL')}")
     except Exception:
-        await respond(e, "❌ Ошибка. Проверь URL.")
+        await msg.edit("❌ Ошибка. Проверь URL.")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!weather (.+)', func=owner_filter))
 async def weather_cmd(e):
-    if check_cover(e): return
+
     city = e.pattern_match.group(1).strip()
-    enc = city.replace(' ', '+')
-    await respond(e, 
-        f"🌤️ **Погода: {city}**\n\n"
-        f"• [wttr.in](https://wttr.in/{enc})\n"
-        f"• [OpenWeatherMap](https://openweathermap.org/find?q={enc})\n"
-        f"• [Weather.com](https://weather.com/ru-RU/weather/today/l/{enc})"
-    )
+    msg = await respond(e, "⏳ Запрашиваю погоду...")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"https://wttr.in/{city.replace(' ', '+')}?format=j1",
+                             timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+        cc = data['current_condition'][0]
+        loc = data['nearest_area'][0]
+        city_name = loc['areaName'][0]['value']
+        country = loc['country'][0]['value']
+        temp = cc['temp_C']
+        feels = cc['FeelsLikeC']
+        humidity = cc['humidity']
+        wind = cc['windspeedKmph']
+        desc = cc['weatherDesc'][0]['value']
+        await msg.edit(
+            f"🌤 **Погода: {city_name}, {country}**\n\n"
+            f"🌡 Температура: **{temp}°C** (ощущается как {feels}°C)\n"
+            f"💧 Влажность: **{humidity}%**\n"
+            f"💨 Ветер: **{wind} км/ч**\n"
+            f"📋 {desc}"
+        )
+    except Exception:
+        await msg.edit("❌ Город не найден. Попробуй на латинице.")
     db.bump_stat('cmds')
+
+_translator = None
+
+def _get_translator():
+    global _translator
+    if _translator is None:
+        _translator = GoogleTranslator(source='auto', target='ru')
+    return _translator
 
 @client.on(events.NewMessage(pattern=r'!translate (.+)', func=owner_filter))
 async def translate_cmd(e):
-    if check_cover(e): return
+
     text = e.pattern_match.group(1).strip()
-    enc = text.replace(' ', '%20')
-    await respond(e, 
-        f"🌐 **Перевод:** _{text}_\n\n"
-        f"• [RU→EN](https://translate.google.com/?sl=ru&tl=en&text={enc})\n"
-        f"• [EN→RU](https://translate.google.com/?sl=en&tl=ru&text={enc})\n"
-        f"• [Auto→RU](https://translate.google.com/?sl=auto&tl=ru&text={enc})"
-    )
+    msg = await respond(e, "⏳ Перевожу...")
+    try:
+        t = await asyncio.to_thread(_get_translator)
+        result = await asyncio.to_thread(t.translate, text)
+        await msg.edit(f"🌐 **Перевод:**\n\n{result}")
+    except Exception as ex:
+        await msg.edit(f"❌ Ошибка перевода: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)', func=owner_filter))
 async def base64_cmd(e):
-    if check_cover(e): return
+
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
     try:
         if mode == 'encode':
@@ -1519,7 +988,7 @@ async def base64_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!hash (.+)', func=owner_filter))
 async def hash_cmd(e):
-    if check_cover(e): return
+
     text = e.pattern_match.group(1).strip().encode()
     await respond(e, 
         f"#️⃣ **Хэши**\n\n"
@@ -1532,14 +1001,14 @@ async def hash_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!morse (.+)', func=owner_filter))
 async def morse_cmd(e):
-    if check_cover(e): return
+
     text = e.pattern_match.group(1).strip()
     await respond(e, f"📡 **Морзе:**\n_{text}_\n\n`{morse_enc(text)}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', func=owner_filter))
 async def caesar_cmd(e):
-    if check_cover(e): return
+
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
     res = caesar(text, shift, dec=(mode == 'decode'))
     await respond(e, f"{'🔒' if mode == 'encode' else '🔓'} **Цезарь (сдвиг {shift}):**\n_{text}_\n\n`{res}`")
@@ -1547,7 +1016,7 @@ async def caesar_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', func=owner_filter))
 async def vigenere_cmd(e):
-    if check_cover(e): return
+
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
     res = vigenere(text, key, dec=(mode == 'decode'))
     await respond(e, f"{'🔒' if mode == 'encode' else '🔓'} **Виженер (ключ: {key}):**\n_{text}_\n\n`{res}`")
@@ -1555,7 +1024,7 @@ async def vigenere_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!password(?:\s+(\d+))?(?:\s+(simple))?$', func=owner_filter))
 async def password_cmd(e):
-    if check_cover(e): return
+
     length = max(4, min(int(e.pattern_match.group(1) or 16), 128))
     sym = not e.pattern_match.group(2)
     pwd = gen_pwd(length, sym)
@@ -1565,17 +1034,25 @@ async def password_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!qr (.+)', func=owner_filter))
 async def qr_cmd(e):
-    if check_cover(e): return
-    text = e.pattern_match.group(1).strip().replace(' ', '+')
-    await respond(e, 
-        f"📱 **QR-код**\n\n"
-        f"🔗 [Открыть изображение](https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={text})"
-    )
+
+    text = e.pattern_match.group(1).strip()
+    msg = await respond(e, "⏳ Генерирую QR-код...")
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        path = os.path.join(MEDIA_DIR, f'qr_{int(time.time())}.png')
+        img = await asyncio.to_thread(qrcode.make, text)
+        await asyncio.to_thread(img.save, path)
+        await client.send_file(e.chat_id, path,
+            caption=f"📱 QR-код для:\n`{text[:80]}{'...' if len(text) > 80 else ''}`")
+        await msg.delete()
+        os.remove(path)
+    except Exception as ex:
+        await msg.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!uuid$', func=owner_filter))
 async def uuid_cmd(e):
-    if check_cover(e): return
+
     ids = [str(uuid.uuid4()) for _ in range(5)]
     out = "\n".join(f"`{u}`" for u in ids)
     await respond(e, f"🆔 **Случайные UUID v4:**\n\n{out}")
@@ -1583,7 +1060,7 @@ async def uuid_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=owner_filter))
 async def color_cmd(e):
-    if check_cover(e): return
+
     raw = e.pattern_match.group(1).strip()
     if raw.startswith('#'):
         h = raw.lstrip('#')
@@ -1592,33 +1069,27 @@ async def color_cmd(e):
     else:
         r, g, b = map(int, raw.split(','))
         hex_val = f"#{r:02X}{g:02X}{b:02X}"
-    rf, gf, bf = r / 255, g / 255, b / 255
-    mx, mn = max(rf, gf, bf), min(rf, gf, bf)
-    l_val = (mx + mn) / 2
-    if mx == mn:
-        s_val = 0.0
-        h_val = 0.0
-    else:
-        denom = 1 - abs(2 * l_val - 1)
-        s_val = 0 if denom == 0 else (mx - mn) / denom
-        if mx == rf:
-            h_val = 60 * ((gf - bf) / (mx - mn) % 6)
-        elif mx == gf:
-            h_val = 60 * ((bf - rf) / (mx - mn) + 2)
-        else:
-            h_val = 60 * ((rf - gf) / (mx - mn) + 4)
-    await respond(e, 
-        f"🎨 **Цвет**\n\n"
-        f"HEX: `{hex_val}`\n"
-        f"RGB: `rgb({r}, {g}, {b})`\n"
-        f"HSL: `hsl({h_val:.0f}°, {s_val * 100:.0f}%, {l_val * 100:.0f}%)`\n\n"
-        f"🔗 [Превью](https://www.colorhexa.com/{hex_val.lstrip('#')})"
-    )
+    msg = await respond(e, "⏳ Генерирую образец цвета...")
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        path = os.path.join(MEDIA_DIR, f'color_{int(time.time())}.png')
+        img = await asyncio.to_thread(Image.new, 'RGB', (300, 200), (r, g, b))
+        brightness = (r * 299 + g * 587 + b * 114) / 1000
+        text_color = 'white' if brightness < 128 else 'black'
+        draw = await asyncio.to_thread(ImageDraw.Draw, img)
+        await asyncio.to_thread(draw.text, (10, 10), hex_val, fill=text_color)
+        await asyncio.to_thread(img.save, path)
+        await client.send_file(e.chat_id, path,
+            caption=f"🎨 **{hex_val}**\nRGB: `rgb({r}, {g}, {b})`")
+        await msg.delete()
+        os.remove(path)
+    except Exception as ex:
+        await msg.edit(f"❌ Ошибка: {ex}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!ascii (.+)', func=owner_filter))
 async def ascii_cmd(e):
-    if check_cover(e): return
+
     text = e.pattern_match.group(1).strip()
     codes = ' '.join(str(ord(c)) for c in text)
     back = ''.join(chr(int(x)) for x in codes.split())
@@ -1627,7 +1098,7 @@ async def ascii_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=owner_filter))
 async def type_cmd(e):
-    if check_cover(e): return
+
     mode = e.pattern_match.group(1) or 'normal'
     text = e.pattern_match.group(2).strip()
     if mode == 'fast':
@@ -1680,42 +1151,35 @@ async def type_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!echo (.+)', func=owner_filter))
 async def echo_cmd(e):
-    if check_cover(e): return
-    await e.delete()
-    await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
-    db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!say (.+)', func=owner_filter))
-async def say_cmd(e):
-    if check_cover(e): return
     await e.delete()
     await client.send_message(e.chat_id, e.pattern_match.group(1).strip())
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!bold (.+)', func=owner_filter))
 async def bold_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, f"**{e.pattern_match.group(1).strip()}**")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!italic (.+)', func=owner_filter))
 async def italic_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, f"__{e.pattern_match.group(1).strip()}__")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!mono (.+)', func=owner_filter))
 async def mono_cmd(e):
-    if check_cover(e): return
+
     await e.delete()
     await client.send_message(e.chat_id, f"`{e.pattern_match.group(1).strip()}`")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!clean(?:\s+(\d+))?$', func=owner_filter))
 async def clean_cmd(e):
-    if check_cover(e): return
+
     limit = int(e.pattern_match.group(1) or 10)
     my_id = (await client.get_me()).id
     await e.delete()
@@ -1732,7 +1196,7 @@ async def clean_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!purge(?:\s+(\d+))?$', func=owner_filter))
 async def purge_cmd(e):
-    if check_cover(e): return
+
     limit = int(e.pattern_match.group(1) or 10)
     await e.delete()
     count = 0
@@ -1747,7 +1211,7 @@ async def purge_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)', func=owner_filter))
 async def spam_cmd(e):
-    if check_cover(e): return
+
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
     MAX_SPAM = 50
     if count < 1 or count > MAX_SPAM:
@@ -1767,7 +1231,7 @@ async def spam_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!forward (-?\d+)', func=owner_filter))
 async def forward_cmd(e):
-    if check_cover(e): return
+
     if not e.reply_to_msg_id:
         await respond(e, "ℹ️ Ответьте на сообщение: `!forward [chat_id]`")
         return
@@ -1781,7 +1245,7 @@ async def forward_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!pin$', func=owner_filter))
 async def pin_cmd(e):
-    if check_cover(e): return
+
     if not e.reply_to_msg_id:
         await respond(e, "ℹ️ Ответьте на сообщение")
         return
@@ -1791,7 +1255,7 @@ async def pin_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!unpin$', func=owner_filter))
 async def unpin_cmd(e):
-    if check_cover(e): return
+
     if e.reply_to_msg_id:
         await (await e.get_reply_message()).unpin()
     else:
@@ -1801,7 +1265,7 @@ async def unpin_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!copyall (\d+) (-?\d+)', func=owner_filter))
 async def copyall_cmd(e):
-    if check_cover(e): return
+
     count, target = int(e.pattern_match.group(1)), int(e.pattern_match.group(2))
     await respond(e, f"⏳ Копирую {count} сообщений...")
     msgs = []
@@ -1821,7 +1285,7 @@ async def copyall_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!react (.+)', func=owner_filter))
 async def react_cmd(e):
-    if check_cover(e): return
+
     if not e.reply_to_msg_id:
         await respond(e, "ℹ️ Ответьте на сообщение: `!react 👍`")
         return
@@ -1839,7 +1303,7 @@ async def react_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'^!save$', func=owner_filter))
 async def save_media_cmd(e):
-    if check_cover(e): return
+
     if not e.reply_to_msg_id:
         await respond(e, "ℹ️ Ответьте на фото/видео или используйте `!save key value`")
         return
@@ -1861,7 +1325,7 @@ async def save_media_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!save (\S+) (.+)', func=owner_filter))
 async def save_cmd(e):
-    if check_cover(e): return
+
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
     db.set_saved(k, v)
     await respond(e, f"✅ `{k}` = _{v}_")
@@ -1869,7 +1333,7 @@ async def save_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!get (\S+)', func=owner_filter))
 async def get_cmd(e):
-    if check_cover(e): return
+
     k = e.pattern_match.group(1)
     v = db.get_saved(k)
     await respond(e, f"📦 `{k}` = _{v}_" if v else f"❌ Ключ `{k}` не найден")
@@ -1877,7 +1341,7 @@ async def get_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!del (\S+)', func=owner_filter))
 async def del_cmd(e):
-    if check_cover(e): return
+
     k = e.pattern_match.group(1)
     v = db.get_saved(k)
     if v is not None:
@@ -1889,7 +1353,7 @@ async def del_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!list$', func=owner_filter))
 async def list_cmd(e):
-    if check_cover(e): return
+
     d = db.all_saved()
     if not d:
         await respond(e, "📭 Нет данных")
@@ -1901,7 +1365,7 @@ async def list_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!find (.+)', func=owner_filter))
 async def find_cmd(e):
-    if check_cover(e): return
+
     query = e.pattern_match.group(1).strip().lower()
     saved_results = db.search_saved(query)
     notes_results = db.search_notes(query)
@@ -1922,7 +1386,7 @@ async def find_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', func=owner_filter))
 async def note_cmd(e):
-    if check_cover(e): return
+
     k = e.pattern_match.group(1)
     t = e.pattern_match.group(2) or ""
     if e.reply_to_msg_id:
@@ -1937,7 +1401,7 @@ async def note_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!getnote (\S+)', func=owner_filter))
 async def getnote_cmd(e):
-    if check_cover(e): return
+
     k = e.pattern_match.group(1)
     v = db.get_note(k)
     if v is not None:
@@ -1948,7 +1412,7 @@ async def getnote_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!delnote (\S+)', func=owner_filter))
 async def delnote_cmd(e):
-    if check_cover(e): return
+
     k = e.pattern_match.group(1)
     v = db.get_note(k)
     if v is not None:
@@ -1960,7 +1424,7 @@ async def delnote_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!notes$', func=owner_filter))
 async def notes_cmd(e):
-    if check_cover(e): return
+
     d = db.all_notes()
     if not d:
         await respond(e, "📭 Нет заметок")
@@ -1972,7 +1436,7 @@ async def notes_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!todo (.+)', func=owner_filter))
 async def todo_add_cmd(e):
-    if check_cover(e): return
+
     task = e.pattern_match.group(1).strip()
     db.add_todo(task)
     todos = db.get_todos()
@@ -1981,7 +1445,7 @@ async def todo_add_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!todos$', func=owner_filter))
 async def todos_cmd(e):
-    if check_cover(e): return
+
     todos = db.get_todos()
     if not todos:
         await respond(e, "📭 Список задач пуст")
@@ -1997,7 +1461,7 @@ async def todos_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!done (\d+)', func=owner_filter))
 async def done_cmd(e):
-    if check_cover(e): return
+
     idx = int(e.pattern_match.group(1)) - 1
     todos = db.get_todos()
     if 0 <= idx < len(todos):
@@ -2009,7 +1473,7 @@ async def done_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!undone (\d+)', func=owner_filter))
 async def undone_cmd(e):
-    if check_cover(e): return
+
     idx = int(e.pattern_match.group(1)) - 1
     todos = db.get_todos()
     if 0 <= idx < len(todos):
@@ -2021,7 +1485,7 @@ async def undone_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!deltodo (\d+)', func=owner_filter))
 async def deltodo_cmd(e):
-    if check_cover(e): return
+
     idx = int(e.pattern_match.group(1)) - 1
     todos = db.get_todos()
     if 0 <= idx < len(todos):
@@ -2033,7 +1497,7 @@ async def deltodo_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!afk(?:\s+(.+))?$', func=owner_filter))
 async def afk_cmd(e):
-    if check_cover(e): return
+
     reason = (e.pattern_match.group(1) or '').strip()
     state.set_afk(reason)
     r = f"\n📝 _{reason}_" if reason else ""
@@ -2042,7 +1506,7 @@ async def afk_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!unafk$', func=owner_filter))
 async def unafk_cmd(e):
-    if check_cover(e): return
+
     dur = state.clear_afk()
     if dur is not None:
         await respond(e, f"☀️ **AFK выключен** | Отсутствовал: _{fmt_time(dur)}_")
@@ -2052,7 +1516,7 @@ async def unafk_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!chatinfo$', func=owner_filter))
 async def chatinfo_cmd(e):
-    if check_cover(e): return
+
     chat = await e.get_chat()
     name = getattr(chat, 'title', None) or f"{getattr(chat, 'first_name', '')} {getattr(chat, 'last_name', '')}".strip()
     uname = getattr(chat, 'username', None)
@@ -2074,7 +1538,7 @@ async def chatinfo_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!members$', func=owner_filter))
 async def members_cmd(e):
-    if check_cover(e): return
+
     try:
         p = await client.get_participants(e.chat_id)
         bots = sum(1 for x in p if x.bot)
@@ -2085,7 +1549,7 @@ async def members_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!admins$', func=owner_filter))
 async def admins_cmd(e):
-    if check_cover(e): return
+
     try:
         admins = await client.get_participants(e.chat_id, filter=ChannelParticipantsAdmins())
         lines = [f"👑 **Администраторы ({len(admins)}):**\n"]
@@ -2099,7 +1563,7 @@ async def admins_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!top(?:\s+(\d+))?$', func=owner_filter))
 async def top_cmd(e):
-    if check_cover(e): return
+
     limit = int(e.pattern_match.group(1) or 200)
     await respond(e, "⏳ Анализирую...")
     cnt, names = defaultdict(int), {}
@@ -2121,7 +1585,7 @@ async def top_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!bots$', func=owner_filter))
 async def bots_cmd(e):
-    if check_cover(e): return
+
     try:
         bots = await client.get_participants(e.chat_id, filter=ChannelParticipantsBots())
         lines = [f"🤖 **Боты в чате ({len(bots)}):**\n"]
@@ -2134,7 +1598,7 @@ async def bots_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!resetdata$', func=owner_filter))
 async def resetdata_cmd(e):
-    if check_cover(e): return
+
     db.clear_all()
     state.auto_reply_enabled = False
     state.auto_reply_text = '💫 Я автоответчик, хозяин скоро ответит! Спасибо за терпение 😘'
@@ -2148,7 +1612,7 @@ async def resetdata_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=owner_filter))
 async def ytshow_cmd(e):
-    if check_cover(e): return
+
     raw = e.pattern_match.group(1).strip()
     parts = raw.rsplit(None, 1)
     if len(parts) == 2 and parts[1].isdigit():
@@ -2166,14 +1630,14 @@ async def ytshow_cmd(e):
         except Exception:
             pass
 
-    filename = await _run_download(edit_fn, url, mode='video', quality=height, timeout=600)
+    filename = await run_download(edit_fn, url, mode='video', quality=height, timeout=600)
     if filename:
-        await _send_and_clean(edit_fn, e.chat_id, filename, f"🎬 YouTube: {url}")
+        await send_and_clean(edit_fn, client, e.chat_id, filename, f"🎬 YouTube: {url}")
     db.bump_stat('cmds')
 
 @client.on(events.NewMessage(pattern=r'!dl\s+(.+)', func=owner_filter))
 async def dl_cmd(e):
-    if check_cover(e): return
+
     url = e.pattern_match.group(1).strip()
 
     status_msg = await respond(e, "⏳ Загрузка...")
@@ -2185,21 +1649,21 @@ async def dl_cmd(e):
             pass
 
     try:
-        filename = await _run_download(edit_fn, url, mode='video', timeout=600)
+        filename = await run_download(edit_fn, url, mode='video', timeout=600)
         if filename:
-            await _send_and_clean(edit_fn, e.chat_id, filename)
+            await send_and_clean(edit_fn, client, e.chat_id, filename)
     except Exception as ex:
         try:
             await status_msg.edit(f"❌ Ошибка: {ex}")
         except Exception:
             pass
-        logger.error(f"dl error: {ex}")
+        _log.error(f"dl error: {ex}")
     db.bump_stat('cmds')
 
 
 @client.on(events.NewMessage(pattern=r'!playlist\s+(.+?)(?:\s+(\d+)(?:-(\d+))?)?$', func=owner_filter))
 async def playlist_cmd(e):
-    if check_cover(e): return
+
     g = e.pattern_match
     url = g.group(1).strip()
     start_num = None
@@ -2210,6 +1674,8 @@ async def playlist_cmd(e):
 
     msg = await respond(e, "⏳ Получаю информацию о плейлисте...")
     try:
+        import yt_dlp
+
         def _get_playlist_info():
             opts = {
                 'quiet': True,
@@ -2254,27 +1720,34 @@ async def playlist_cmd(e):
         for i, video_url in enumerate(selected, 1):
             vid_msg = await respond(e, f"⏳ [{i}/{len(selected)}] Загружаю видео {i}...")
 
-            async def edit_vid(text, vid_msg=vid_msg):
+            async def edit_vid(text, vm=vid_msg):
                 try:
-                    await vid_msg.edit(text)
+                    await vm.edit(text)
                 except Exception:
                     pass
 
-            filename = await _run_download(edit_vid, video_url, mode='video', timeout=600)
+            filename = await run_download(edit_vid, video_url, mode='video', timeout=600)
             if filename:
-                await _send_and_clean(edit_vid, e.chat_id, filename, f"🎬 [{i}/{len(selected)}]")
+                await send_and_clean(edit_vid, client, e.chat_id, filename, f"🎬 [{i}/{len(selected)}]")
                 await asyncio.sleep(2)
 
         await respond(e, f"✅ **Плейлист загружен!** ({len(selected)}/{total} видео)")
     except Exception as ex:
         await respond(e, f"❌ Ошибка плейлиста: {ex}")
-        logger.error(f"playlist error: {ex}")
+        _log.error(f"playlist error: {ex}")
     db.bump_stat('cmds')
+
+
+async def safe_edit(msg, text):
+    try:
+        await msg.edit(text)
+    except Exception:
+        pass
 
 
 @client.on(events.NewMessage(pattern=r'!audio\s+(.+)', func=owner_filter))
 async def audio_cmd(e):
-    if check_cover(e): return
+
     url = e.pattern_match.group(1).strip()
 
     status_msg = await respond(e, "⏳ Загрузка аудио...")
@@ -2286,21 +1759,18 @@ async def audio_cmd(e):
             pass
 
     try:
-        filename = await _run_download(edit_fn, url, mode='audio', timeout=600)
+        filename = await run_download(edit_fn, url, mode='audio', timeout=600)
         if filename:
-            await _send_and_clean(edit_fn, e.chat_id, filename, f"🎵 Аудио")
+            await send_and_clean(edit_fn, client, e.chat_id, filename, f"🎵 Аудио")
     except Exception as ex:
-        try:
-            await status_msg.edit(f"❌ Ошибка: {ex}")
-        except Exception:
-            pass
-        logger.error(f"audio error: {ex}")
+        await safe_edit(status_msg, f"❌ Ошибка: {ex}")
+        _log.error(f"audio error: {ex}")
     db.bump_stat('cmds')
 
 
 @client.on(events.NewMessage(pattern=r'!sub\s+(.+?)(?:\s+(\w{2}))?$', func=owner_filter))
 async def sub_cmd(e):
-    if check_cover(e): return
+
     g = e.pattern_match
     url = g.group(1).strip()
     lang = (g.group(2) or 'ru').lower()
@@ -2419,32 +1889,38 @@ async def watch_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!check_email\s+(\S+)', func=owner_filter))
 async def check_email_cmd(e):
-    if check_cover(e): return
+
     email = e.pattern_match.group(1).strip().lower()
     msg = await respond(e, f"🔍 Проверяю {email}...")
     try:
-        headers = {'hibp-api-key': HIBP_API_KEY, 'User-Agent': 'TelegramUserBot/1.0'}
-        async with aiohttp.ClientSession(headers=headers) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                f'https://haveibeenpwned.com/api/v3/breachedaccount/{email}',
+                f'https://api.xposedornot.com/v1/check-email/{email}',
+                params={'details': 'true'},
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status == 404:
                     await msg.edit(f"✅ **{email}** не найден в известных утечках.")
                 elif resp.status == 200:
                     data = await resp.json()
-                    lines = [f"⚠️ **{email}** найден в {len(data)} утечках:\n"]
-                    for breach in data[:15]:
-                        lines.append(f"• {breach.get('Name', '?')} ({breach.get('BreachDate', '?')})")
-                    if len(data) > 15:
-                        lines.append(f"… и ещё {len(data) - 15}")
+                    breaches = data.get('breaches', [])
+                    if not breaches:
+                        await msg.edit(f"✅ **{email}** не найден в известных утечках.")
+                        return
+                    lines = [f"⚠️ **{email}** найден в {len(breaches)} утечках:\n"]
+                    for b in breaches[:15]:
+                        name = b.get('Name', b) if isinstance(b, dict) else b
+                        date = b.get('BreachDate', '') if isinstance(b, dict) else ''
+                        lines.append(f"• {name}" + (f" ({date})" if date else ""))
+                    if len(breaches) > 15:
+                        lines.append(f"… и ещё {len(breaches) - 15}")
                     await msg.edit("\n".join(lines))
                 elif resp.status == 429:
-                    await msg.edit("❌ Слишком много запросов к API. Попробуйте позже.")
+                    await msg.edit("❌ Слишком много запросов. Лимит: 100/день на IP.")
                 else:
                     await msg.edit(f"❌ Ошибка API: HTTP {resp.status}")
     except asyncio.TimeoutError:
-        await msg.edit("❌ Таймаут запроса к HIBP.")
+        await msg.edit("❌ Таймаут запроса к API.")
     except Exception as ex:
         await msg.edit(f"❌ Ошибка: {ex}")
         logger.error(f"check_email error: {ex}")
@@ -2496,9 +1972,9 @@ async def private_handler(event):
     if not sender:
         return
 
-    logger.info(f"📩 [ЛС] От {sender.first_name} (id:{sender.id}), текст: {event.raw_text[:50]}")
+    _log.info(f"📩 [ЛС] От {sender.first_name} (id:{sender.id})")
     if event.reply_to_msg_id:
-        logger.info(f"↩️ Ответ на сообщение ID:{event.reply_to_msg_id}")
+        _log.info(f"↩️ Ответ на сообщение ID:{event.reply_to_msg_id}")
 
     uid = sender.id
     now = time.time()
@@ -2707,8 +2183,6 @@ CMD_DESCS = {
     'autodel':     {'desc': 'Автоудаление всех исходящих сообщений', 'syntax': '!autodel [on|off] [сек]', 'example': '!autodel on 10'},
     'delay':       {'desc': 'Задержка перед автоответом (симуляция человека)', 'syntax': '!delay [сек]', 'example': '!delay 3'},
     'readreceipt': {'desc': 'Отмечать ЛС прочитанными', 'syntax': '!readreceipt [on|off]', 'example': '!readreceipt off'},
-    'online':      {'desc': 'Установить статус «онлайн»', 'syntax': '!online', 'example': '!online'},
-    'offline':     {'desc': 'Установить статус «недавно»', 'syntax': '!offline', 'example': '!offline'},
     'status_reset':{'desc': 'Сбросить все стелс-режимы', 'syntax': '!status_reset', 'example': '!status_reset'},
     # профиль
     'me':           {'desc': 'Мой профиль', 'syntax': '!me', 'example': '!me'},
@@ -2742,24 +2216,23 @@ CMD_DESCS = {
     # утилиты
     'calc':         {'desc': 'Калькулятор', 'syntax': '!calc [выражение]', 'example': '!calc 2+2*2'},
     'remind':       {'desc': 'Напоминание', 'syntax': '!remind [сек] [текст]', 'example': '!remind 60 Поставить чайник'},
-    'search':       {'desc': 'Поисковики', 'syntax': '!search [запрос]', 'example': '!search Python'},
+    'search':       {'desc': 'Поиск в DuckDuckGo', 'syntax': '!search [запрос]', 'example': '!search Python'},
     'shorten':      {'desc': 'Сократить ссылку', 'syntax': '!shorten [url]', 'example': '!shorten https://example.com'},
-    'weather':      {'desc': 'Ссылки на погоду', 'syntax': '!weather [город]', 'example': '!weather Москва'},
-    'translate':    {'desc': 'Ссылки на перевод', 'syntax': '!translate [текст]', 'example': '!translate Hello'},
+    'weather':      {'desc': 'Текущая погода в городе', 'syntax': '!weather [город]', 'example': '!weather Moscow'},
+    'translate':    {'desc': 'Переводчик (Google)', 'syntax': '!translate [текст]', 'example': '!translate Hello'},
     'base64':       {'desc': 'Base64 кодирование/декодирование', 'syntax': '!base64 encode|decode [текст]', 'example': '!base64 encode Привет'},
     'hash':         {'desc': 'Хэши (MD5/SHA)', 'syntax': '!hash [текст]', 'example': '!hash password'},
     'morse':        {'desc': 'Азбука Морзе', 'syntax': '!morse [текст]', 'example': '!morse SOS'},
     'caesar':       {'desc': 'Шифр Цезаря', 'syntax': '!caesar encode|decode [сдвиг] [текст]', 'example': '!caesar encode 3 Привет'},
     'vigenere':     {'desc': 'Шифр Виженера', 'syntax': '!vigenere encode|decode [ключ] [текст]', 'example': '!vigenere encode key Привет'},
     'password':     {'desc': 'Генератор паролей', 'syntax': '!password [длина] [simple]', 'example': '!password 20'},
-    'qr':           {'desc': 'QR-код', 'syntax': '!qr [текст]', 'example': '!qr https://example.com'},
+    'qr':           {'desc': 'Сгенерировать QR-код', 'syntax': '!qr [текст]', 'example': '!qr https://example.com'},
     'uuid':         {'desc': 'Генератор UUID', 'syntax': '!uuid', 'example': '!uuid'},
-    'color':        {'desc': 'Информация о цвете', 'syntax': '!color [#HEX или R,G,B]', 'example': '!color #FF0000'},
+    'color':        {'desc': 'Образец цвета + Hex/RGB', 'syntax': '!color [#HEX или R,G,B]', 'example': '!color #FF0000'},
     'ascii':        {'desc': 'ASCII коды символов', 'syntax': '!ascii [текст]', 'example': '!ascii Hello'},
     # сообщения
     'type':         {'desc': 'Печать текста с эффектом', 'syntax': '!type [fast|slow|matrix|glitch] [текст]', 'example': '!type slow Привет'},
     'echo':         {'desc': 'Отправить сообщение', 'syntax': '!echo [текст]', 'example': '!echo Тест'},
-    'say':          {'desc': 'Отправить сообщение (алиас)', 'syntax': '!say [текст]', 'example': '!say Привет'},
     'bold':         {'desc': 'Жирный текст', 'syntax': '!bold [текст]', 'example': '!bold Важно'},
     'italic':       {'desc': 'Курсивный текст', 'syntax': '!italic [текст]', 'example': '!italic Цитата'},
     'mono':         {'desc': 'Моноширинный текст', 'syntax': '!mono [текст]', 'example': '!mono code'},
@@ -2798,7 +2271,7 @@ CMD_DESCS = {
     # безопасность
     'sudo':         {'desc': 'Управление sudo-пользователями', 'syntax': '!sudo [on|off] @user', 'example': '!sudo on @durov'},
     'watch':        {'desc': 'Мониторинг новых сессий', 'syntax': '!watch [on|off]', 'example': '!watch on'},
-    'check_email':  {'desc': 'Проверить email на утечки (HIBP)', 'syntax': '!check_email <email>', 'example': '!check_email test@example.com'},
+    'check_email':  {'desc': 'Проверить email на утечки', 'syntax': '!check_email <email>', 'example': '!check_email test@example.com'},
     'protect':      {'desc': 'Защита от удаления чатов', 'syntax': '!protect [on|off]', 'example': '!protect on'},
     # rp
     'rphelp':       {'desc': 'Список RP-команд', 'syntax': '!rphelp', 'example': '!rphelp'},
@@ -2812,7 +2285,7 @@ COMMANDS_LIST = {
     'стелс': [
         '!cover', '!silent', '!shadow', '!lock', '!mute',
         '!typing', '!autodel', '!delay', '!readreceipt',
-        '!online', '!offline', '!status_reset'
+        '!status_reset'
     ],
     'профиль': [
         '!me', '!avatar', '!name', '!lastname', '!bio', '!whois', '!username_check'
@@ -2830,7 +2303,7 @@ COMMANDS_LIST = {
         '!qr', '!uuid', '!color', '!ascii'
     ],
     'сообщения': [
-        '!type', '!echo', '!say', '!bold', '!italic', '!mono',
+        '!type', '!echo', '!bold', '!italic', '!mono',
         '!clean', '!purge', '!spam', '!forward', '!pin', '!unpin',
         '!copyall', '!react'
     ],
@@ -2879,8 +2352,6 @@ HELP_CATS = {
         "`!autodel [on|off] [сек]` — автовудаление исходящих\n"
         "`!delay [сек]` — задержка перед автоответом\n"
         "`!readreceipt [on|off]` — отмечать прочитанным\n"
-        "`!online` — статус «онлайн»\n"
-        "`!offline` — статус «недавно»\n"
         "`!status_reset` — сброс всех стелс-режимов"
     ),
     'профиль': (
@@ -2918,7 +2389,7 @@ HELP_CATS = {
         "🛠 **УТИЛИТЫ**\n\n"
         "`!calc [выражение]` — калькулятор\n"
         "`!remind [сек] [текст]` — напоминание\n"
-        "`!search [запрос]` — поисковики\n"
+        "`!search [запрос]` — поиск в DuckDuckGo\n"
         "`!shorten [url]` — сократить ссылку\n"
         "`!weather [город]` — погода\n"
         "`!translate [текст]` — перевод\n"
@@ -2928,15 +2399,15 @@ HELP_CATS = {
         "`!caesar encode/decode [сдвиг] [текст]`\n"
         "`!vigenere encode/decode [ключ] [текст]`\n"
         "`!password [длина] [simple]`\n"
-        "`!qr [текст]` — QR-код\n"
+        "`!qr [текст]` — генерация QR-кода\n"
         "`!uuid` — UUID v4\n"
-        "`!color [#HEX или R,G,B]`\n"
+        "`!color [#HEX или R,G,B]` — образец цвета\n"
         "`!ascii [текст]`"
     ),
     'сообщения': (
         "✉️ **СООБЩЕНИЯ**\n\n"
         "`!type [fast/slow/matrix/glitch] [текст]`\n"
-        "`!echo [текст]` / `!say [текст]`\n"
+        "`!echo [текст]`\n"
         "`!bold` `!italic` `!mono` [текст]\n"
         "`!clean [n]` — удалить свои N сообщений\n"
         "`!purge [n]` — удалить любые N сообщений\n"
@@ -2958,7 +2429,7 @@ HELP_CATS = {
         "🔐 **БЕЗОПАСНОСТЬ**\n\n"
         "`!sudo [on|off] @user` — управление sudo-доступом\n"
         "`!watch [on|off]` — мониторинг новых сессий\n"
-        "`!check_email <email>` — проверка утечек через HIBP\n"
+        "`!check_email <email>` — проверка email на утечки\n"
         "`!protect [on|off]` — защита от удаления чатов"
     ),
     'afk': (
@@ -2990,7 +2461,7 @@ HELP_CATS = {
 
 @client.on(events.NewMessage(pattern=r'!help(?:\s+(.+))?$', func=owner_filter))
 async def help_cmd(e):
-    if check_cover(e): return
+
     arg = (e.pattern_match.group(1) or '').strip().lower()
 
     if arg.startswith('cmd '):
@@ -3051,16 +2522,11 @@ async def help_cmd(e):
     await respond(e, "\n".join(lines))
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!commands$', func=owner_filter))
-async def commands_cmd(e):
-    if check_cover(e): return
-    await respond(e, "ℹ️ Используйте `!help all` для списка всех команд с описанием.")
-    db.bump_stat('cmds')
-
 if __name__ == "__main__":
-    print("🚀 Запуск UserBot (с RP-командами)...")
+    import threading
+    print("🚀 Запуск UserBot...")
     os.makedirs(MEDIA_DIR, exist_ok=True)
-    Thread(target=run_web, daemon=True).start()
+    threading.Thread(target=run_web, daemon=True).start()
     client.start()
-    print("✅ Бот запущен! Логи в консоли.")
+    print("✅ Бот запущен!")
     client.run_until_disconnected()

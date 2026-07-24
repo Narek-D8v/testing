@@ -478,10 +478,6 @@ def get_rp_reply(action_key):
     return random.choice(RP_COMMANDS[action_key]['replies'])
 
 
-def get_all_rp_commands():
-    return list(RP_COMMANDS.keys())
-
-
 RP_CATEGORIES = {
     'интимные': [
         'поцеловать', 'обнять', 'засосать', 'отсосать', 'сосать',

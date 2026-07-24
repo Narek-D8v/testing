@@ -110,9 +110,6 @@ class Storage:
     def set_state(self, key, value):
         self._set('bot_state', key, str(value))
 
-    def del_state(self, key):
-        self._delete('bot_state', key)
-
     # ── Saved data ──
 
     def get_saved(self, key, default=None):
@@ -185,10 +182,6 @@ class Storage:
             )
             self.conn.commit()
 
-    def get_stat(self, key, default=0):
-        v = self._get('stats', key)
-        return int(v) if v is not None else default
-
     def all_stats(self):
         raw = self._get_all('stats')
         return {k: int(v) for k, v in raw.items()}
@@ -207,9 +200,6 @@ class Storage:
     def set_reply_text(self, uid, text):
         self._set('reply_settings', str(uid), text)
 
-    def del_reply_text(self, uid):
-        self._delete('reply_settings', str(uid))
-
     def get_default_reply(self):
         return self._get('reply_settings', 'default')
 
@@ -224,9 +214,6 @@ class Storage:
 
     def save_session(self, hash_key, data_json):
         self._set('sessions', hash_key, data_json)
-
-    def del_session(self, hash_key):
-        self._delete('sessions', hash_key)
 
     def clear_sessions(self):
         self._delete_all('sessions')
