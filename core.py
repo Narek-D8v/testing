@@ -188,11 +188,10 @@ async def respond(event, text, **kwargs):
     return await event.reply(text, **kwargs)
 
 
-_translator = None
+_translator = {}
 
-def _get_translator():
-    global _translator
-    if _translator is None:
+def _get_translator(target='ru'):
+    if target not in _translator:
         from deep_translator import GoogleTranslator
-        _translator = GoogleTranslator(source='auto', target='ru')
-    return _translator
+        _translator[target] = GoogleTranslator(source='auto', target=target)
+    return _translator[target]
