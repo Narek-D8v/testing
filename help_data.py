@@ -357,12 +357,17 @@ async def help_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!trhelp$', func=owner_filter))
 async def trhelp_cmd(e):
-    lines = ["🌐 **Коды языков Google Translate**\n"]
-    for code in sorted(LANG_CODES):
-        lines.append(f"`{code}` — {LANG_CODES[code]}")
-    text = "\n".join(lines)
-    text += "\n\n💡 Использование: `!translate <код> [текст]`"
-    await respond(e, text)
+    codes = sorted(LANG_CODES)
+    chunk_size = 25
+    chunks = [codes[i:i+chunk_size] for i in range(0, len(codes), chunk_size)]
+    for i, chunk in enumerate(chunks):
+        lines = [f"`{c}` — {LANG_CODES[c]}" for c in chunk]
+        if i == 0:
+            lines.insert(0, "🌐 **Коды языков Google Translate**\n")
+            lines.append("\n💡 Использование: `!translate <код> [текст]`")
+            await respond(e, "\n".join(lines))
+        else:
+            await e.reply("\n".join(lines))
 
 LANG_CODES = {
     'af': '🇿🇦 Африкаанс', 'sq': '🇦🇱 Албанский', 'am': '🇪🇹 Амхарский', 'ar': '🇸🇦 Арабский',
