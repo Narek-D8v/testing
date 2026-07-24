@@ -12,7 +12,6 @@ import uuid
 from collections import defaultdict
 
 import aiohttp
-from duckduckgo_search import DDGS
 from flask import Flask
 from deep_translator import GoogleTranslator
 from PIL import Image, ImageDraw
@@ -877,24 +876,31 @@ async def remind_cmd(e):
 
 @client.on(events.NewMessage(pattern=r'!search (.+)', func=owner_filter))
 async def search_cmd(e):
-
     query = e.pattern_match.group(1).strip()
     msg = await respond(e, "⏳ Ищу...")
     try:
-        results = await asyncio.to_thread(
-            lambda: list(DDGS().text(query, max_results=5))
-        )
+        params = {
+            'action': 'query',
+            'list': 'search',
+            'srsearch': query,
+            'format': 'json',
+            'srlimit': 5,
+        }
+        async with aiohttp.ClientSession() as s:
+            async with s.get('https://en.wikipedia.org/w/api.php', params=params) as resp:
+                data = await resp.json()
+        results = data.get('query', {}).get('search', [])
         if not results:
             await msg.edit("❌ Ничего не найдено.")
             return
-        lines = [f"🔍 **Результаты:** _{query}_\n"]
-        for i, r in enumerate(results[:5], 1):
+        lines = [f"🔍 **Результаты (Wikipedia):** _{query}_\n"]
+        for i, r in enumerate(results, 1):
             title = r.get('title', '?')
-            href = r.get('href', '')
-            body = (r.get('body', '') or '')[:120]
+            href = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+            snippet = r.get('snippet', '').replace('<span class="searchmatch">', '**').replace('</span>', '**')[:120]
             lines.append(f"{i}. [{title}]({href})")
-            if body:
-                lines.append(f"   _{body}{'...' if len(r.get('body', '')) > 120 else ''}_")
+            if snippet:
+                lines.append(f"   _{snippet}_")
         await msg.edit("\n".join(lines))
     except Exception as ex:
         await msg.edit(f"❌ Ошибка поиска: {ex}")
@@ -1058,15 +1064,16 @@ async def uuid_cmd(e):
     await respond(e, f"🆔 **Случайные UUID v4:**\n\n{out}")
     db.bump_stat('cmds')
 
-@client.on(events.NewMessage(pattern=r'!color (#[0-9a-fA-F]{6}|\d+,\d+,\d+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!color (.+)', func=owner_filter))
 async def color_cmd(e):
 
-    raw = e.pattern_match.group(1).strip()
+    raw = e.pattern_match.group(1).strip().replace(' ', '')
     if raw.startswith('#'):
         h = raw.lstrip('#')
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         hex_val = raw.upper()
     else:
+        raw = raw.removeprefix('rgb(').removesuffix(')')
         r, g, b = map(int, raw.split(','))
         hex_val = f"#{r:02X}{g:02X}{b:02X}"
     msg = await respond(e, "⏳ Генерирую образец цвета...")
@@ -2151,12 +2158,7 @@ async def rphelp_cmd(event):
     for category in get_all_categories():
         cmds = get_category_commands(category)
         if cmds:
-            lines.append(f"\n**{category.upper()}**:")
-            for i in range(0, len(cmds), 4):
-                chunk = cmds[i:i + 4]
-                lines.append("  " + "  ".join(f"`{c}`" for c in chunk))
-    lines.append("\n💡 Используй: `команда` в ответ на сообщение")
-    lines.append("💬 Можно добавить реплику через Enter:\n   `обнять` + Enter + `Текст реплики`")
+            lines.append(f"\n**{category.upper()}**: {', '.join(f'`{c}`' for c in cmds)}")
     await event.reply("\n".join(lines))
     db.bump_stat('cmds')
 

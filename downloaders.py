@@ -23,6 +23,27 @@ if os.path.exists(_COOKIES_PATH):
 else:
     logger.warning("cookies.txt не найден — YouTube может требовать авторизации")
 
+def _update_ytdlp():
+    try:
+        old_ver = getattr(yt_dlp.version, '__version__', '???')
+        subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet', 'yt-dlp'],
+            capture_output=True, timeout=60
+        )
+        result = subprocess.run(
+            [sys.executable, '-m', 'yt_dlp', '--version'],
+            capture_output=True, text=True, timeout=30
+        )
+        new_ver = result.stdout.strip() or '???'
+        if old_ver != new_ver:
+            logger.info(f"yt-dlp обновлён: {old_ver} → {new_ver}")
+        else:
+            logger.info(f"yt-dlp {old_ver} (актуальная)")
+    except Exception as ex:
+        logger.warning(f"yt-dlp auto-update failed: {ex}")
+
+_update_ytdlp()
+
 try:
     logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
 except Exception:
@@ -124,7 +145,6 @@ def _dl_diag(url):
 def _cli_download(url, output_path):
     cmd = [
         sys.executable, '-m', 'yt_dlp',
-        '-f', 'best',
         '-o', output_path,
         '--no-playlist',
         '--no-check-certificates',
@@ -169,19 +189,19 @@ def _pick_format_and_download(url, opts, quality, is_audio):
             )
 
     if _HAS_FFMPEG and is_audio:
-        opts['format'] = 'bestaudio/best'
+        opts['format'] = 'ba/b'
         opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
     elif _HAS_FFMPEG and not is_audio:
-        opts['format'] = 'bestvideo+bestaudio/best'
+        opts['format'] = 'bv*+ba/b'
         if quality:
-            opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+            opts['format'] = f'bv*[height<={quality}]+ba/b[height<={quality}]'
         opts['merge_output_format'] = 'mp4'
     else:
-        formats_to_try = ['bestaudio', 'best'] if is_audio else ['best', 'bestvideo']
+        formats_to_try = ['ba', 'b'] if is_audio else ['b', 'bv']
         last_ex = None
         for fmt in formats_to_try:
             opts['format'] = fmt
@@ -235,7 +255,7 @@ async def _download_instagram_video(url):
     def _dl():
         try:
             opts = dict(_YT_DL_OPTS)
-            opts['format'] = 'best'
+            opts['format'] = 'b'
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 return _resolve_yt_path(ydl, info)
@@ -248,7 +268,7 @@ async def _download_tiktok_video(url):
     def _dl():
         try:
             opts = dict(_YT_DL_OPTS)
-            opts['format'] = 'best'
+            opts['format'] = 'b'
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 return _resolve_yt_path(ydl, info)
