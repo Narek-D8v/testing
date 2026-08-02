@@ -2049,10 +2049,43 @@ async def rphelp_cmd(event):
 import help_data
 
 if __name__ == "__main__":
+    import glob as _glob
     import threading
+    from telethon.errors import AuthKeyDuplicatedError
+
     print("🚀 Запуск UserBot...")
     os.makedirs(MEDIA_DIR, exist_ok=True)
     threading.Thread(target=run_web, daemon=True).start()
-    client.start()
+
+    _base = os.path.dirname(os.path.abspath(__file__))
+    _lock = os.path.join(_base, 'bot.lock')
+    if os.path.exists(_lock):
+        print("⚠️ Найден bot.lock — возможно, другой экземпляр бота уже работает с той же сессией.")
+        print("   Это частая причина AuthKeyDuplicatedError. Останови второй экземпляр, затем удали bot.lock.")
+    with open(_lock, 'w') as _f:
+        _f.write(str(os.getpid()))
+    try:
+        os.remove(_lock)
+    except OSError:
+        pass
+
+    try:
+        client.start()
+    except AuthKeyDuplicatedError:
+        print("❌ AuthKeyDuplicatedError: сессия использовалась под двумя разными IP одновременно и отозвана.")
+        for _f in _glob.glob(os.path.join(_base, 'my_userbot.session*')):
+            try:
+                os.remove(_f)
+                print(f"   Удалена устаревшая сессия: {_f}")
+            except OSError:
+                pass
+        try:
+            client.session.close()
+        except Exception:
+            pass
+        print("ℹ️ Сессия сброшена. Будет предложена новая авторизация: введи телефон и код.")
+        print("   Совет: останови второй экземпляр бота (локальный или на Render), иначе — снова блок.")
+        print("   Для удельной смены окружения задай STRING_SESSION в .env.")
+        client.start()
     print("✅ Бот запущен!")
     client.run_until_disconnected()
