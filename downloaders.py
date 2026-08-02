@@ -10,8 +10,41 @@ import urllib.request
 import aiohttp
 import yt_dlp
 
-from config import MEDIA_DIR, logger
+from config import MEDIA_DIR, logger, PROXY, PROXY_LIST
 from utils import format_bytes
+
+_proxy_list = list(PROXY_LIST)
+_single_proxy = PROXY
+
+
+def _proxy_candidates():
+    proxies = [_p for _p in _proxy_list if _p] or ([_single_proxy] if _single_proxy else [])
+    if proxies:
+        return proxies + [None]
+    return [None]
+
+
+def _with_proxy(opts, proxy):
+    if proxy:
+        o = dict(opts)
+        o['proxy'] = proxy
+        return o
+    return opts
+
+
+def _dl_rotate(sync_fn):
+    last_ex = None
+    for proxy in _proxy_candidates():
+        label = proxy or 'прямое подключение'
+        try:
+            return sync_fn(proxy)
+        except Exception as ex:
+            last_ex = ex
+            logger.warning(f"Загрузка через {label} не удалась: {ex}")
+            continue
+    if last_ex:
+        raise last_ex
+    raise ValueError("Не удалось скачать: нет рабочих прокси")
 
 _COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
 _COOKIES_VALID = False
@@ -78,13 +111,6 @@ _YT_DL_OPTS = {
     'throttledratelimit': 100000,
     'sleep_interval_requests': 2,
     'js_runtimes': _JS_RUNTIMES,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['android', 'web'],
-            'player_skip': ['js'],
-        },
-    },
-    'cookiefile': _COOKIES_PATH if _COOKIES_VALID else None,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
@@ -186,34 +212,22 @@ def _resolve_yt_path(ydl, info):
 
 
 def _probe_formats(url, opts):
-    attempts = [
-        ('android', {'extract_flat': True,
-                     'extractor_args': {'youtube': {'player_client': ['android'],
-                                                    'player_skip': ['js']}}}),
-        ('web', {'extract_flat': True,
-                 'extractor_args': {'youtube': {'player_client': ['web'],
-                                                'player_skip': ['js']}}}),
-    ]
-    for label, extra in attempts:
-        probe_opts = dict(opts)
-        probe_opts.pop('format', None)
-        probe_opts.pop('extractor_args', None)
-        probe_opts['skip_download'] = True
-        probe_opts.update(extra)
-        try:
-            with yt_dlp.YoutubeDL(probe_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                logger.info(f"YouTube probe [{label}]: id={info.get('id', '?')}, "
-                            f"title=\"{info.get('title', '?')[:80]}\", "
-                            f"channel={info.get('channel', '?')}")
-                if info.get('title') or info.get('entries'):
-                    return info
-        except yt_dlp.utils.DownloadError as ex:
-            logger.warning(f"Probe [{label}] failed: {ex}")
-            continue
-        except Exception as ex:
-            logger.warning(f"Probe [{label}] unexpected: {ex}")
-            continue
+    probe_opts = dict(opts)
+    probe_opts.pop('format', None)
+    probe_opts['skip_download'] = True
+    try:
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            logger.info(f"YouTube probe: id={info.get('id', '?')}, "
+                        f"title=\"{info.get('title', '?')[:80]}\", "
+                        f"channel={info.get('channel', '?')}")
+            if info.get('title') or info.get('entries'):
+                return info
+            logger.warning("Probe вернул пустой результат (возможно, требуется авторизация)")
+    except yt_dlp.utils.DownloadError as ex:
+        logger.warning(f"Probe failed: {ex}")
+    except Exception as ex:
+        logger.warning(f"Probe unexpected: {ex}")
     _dl_diag(url)
     return None
 
@@ -259,6 +273,18 @@ def _cli_download(url, output_path):
 
 
 def _pick_format_and_download(url, opts, quality, is_audio):
+    try:
+        return _download_with_opts(url, opts, quality, is_audio)
+    except (yt_dlp.utils.DownloadError, ValueError) as ex:
+        if not _COOKIES_VALID:
+            raise
+        logger.warning(f"Первичная загрузка не удалась ({ex}); пробую с cookies.txt (последний вариант)")
+        retry_opts = dict(opts)
+        retry_opts['cookiefile'] = _COOKIES_PATH
+        return _download_with_opts(url, retry_opts, quality, is_audio)
+
+
+def _download_with_opts(url, opts, quality, is_audio):
     os.makedirs(MEDIA_DIR, exist_ok=True)
 
     if not _HAS_FFMPEG:
@@ -317,9 +343,9 @@ def _pick_format_and_download(url, opts, quality, is_audio):
 
 
 async def _download_yt_video(url, quality=None):
-    def _dl():
+    def _dl(proxy=None):
         try:
-            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality, is_audio=False)
+            return _pick_format_and_download(url, _with_proxy(dict(_YT_DL_OPTS), proxy), quality, is_audio=False)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
         except ValueError:
@@ -328,13 +354,13 @@ async def _download_yt_video(url, quality=None):
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
-    return await asyncio.to_thread(_dl)
+    return await asyncio.to_thread(_dl_rotate, _dl)
 
 
 async def _download_yt_audio(url):
-    def _dl():
+    def _dl(proxy=None):
         try:
-            return _pick_format_and_download(url, dict(_YT_DL_OPTS), quality=None, is_audio=True)
+            return _pick_format_and_download(url, _with_proxy(dict(_YT_DL_OPTS), proxy), quality=None, is_audio=True)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"YouTube: {ex}")
         except ValueError:
@@ -343,33 +369,133 @@ async def _download_yt_audio(url):
             logger.error(f"yt-dlp unexpected error: {ex}", exc_info=True)
             raise ValueError(f"YouTube: {ex}")
 
-    return await asyncio.to_thread(_dl)
+    return await asyncio.to_thread(_dl_rotate, _dl)
 
 
 async def _download_instagram_video(url):
-    def _dl():
+    def _dl(proxy=None):
         try:
-            opts = dict(_YT_DL_OPTS)
+            opts = _with_proxy(dict(_YT_DL_OPTS), proxy)
             opts['format'] = 'b'
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 return _resolve_yt_path(ydl, info)
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"Instagram: {ex}")
-    return await asyncio.to_thread(_dl)
+        except ValueError:
+            raise
+        except Exception as ex:
+            logger.error(f"instagram unexpected error: {ex}", exc_info=True)
+            raise ValueError(f"Instagram: {ex}")
+
+    return await asyncio.to_thread(_dl_rotate, _dl)
 
 
 async def _download_tiktok_video(url):
-    def _dl():
+    def _dl(proxy=None):
+        opts = _with_proxy(dict(_YT_DL_OPTS), proxy)
+        opts['format'] = 'b'
         try:
-            opts = dict(_YT_DL_OPTS)
-            opts['format'] = 'b'
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                return _resolve_yt_path(ydl, info)
+                fp = _resolve_yt_path(ydl, info)
+                if fp:
+                    ext = os.path.splitext(fp)[1].lower()
+                    if ext not in ('.m4a', '.mp3', '.aac', '.ogg'):
+                        return fp
+                    logger.info(f"TikTok: видео нет, только аудио ({fp}) — пробую картинки")
+                    return None
         except yt_dlp.utils.DownloadError as ex:
             raise ValueError(f"TikTok: {ex}")
-    return await asyncio.to_thread(_dl)
+        except Exception as ex:
+            logger.warning(f"TikTok video error: {ex}")
+        return None
+
+    try:
+        fp = await asyncio.to_thread(_dl_rotate, _dl)
+    except ValueError:
+        fp = None
+    if fp:
+        return fp
+
+    images = await _scrape_tiktok_images(url)
+    if images:
+        return images
+    raise ValueError("TikTok: видео или карточки не доступны (IP может быть заблокирован)")
+
+
+async def _scrape_tiktok_images(url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'}
+
+    working = None
+    html = None
+    for proxy in [p for p in _proxy_candidates() if p] or [None]:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+                kwargs = {'headers': headers, 'allow_redirects': True}
+                if proxy:
+                    kwargs['proxy'] = proxy
+                async with s.get(url, **kwargs) as resp:
+                    if resp.status != 200:
+                        continue
+                    html = await resp.text(errors='ignore')
+                    working = proxy
+                    break
+        except Exception as ex:
+            logger.warning(f"TikTok page fetch через {proxy or 'напрямую'} не удалась: {ex}")
+            continue
+    if html is None:
+        return None
+
+    candidates = []
+    m = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"', html, re.I)
+    if not m:
+        m = re.search(r'<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"', html, re.I)
+    if m:
+        candidates.append(m.group(1).replace('&amp;', '&'))
+    for s in re.findall(r'data-e2e="slide_img"[^>]*src="([^"]+)"', html):
+        candidates.append(s.replace('&amp;', '&'))
+    for s in re.findall(r'<img[^>]+src="([^"]+)"', html):
+        candidates.append(s.replace('&amp;', '&'))
+
+    seen, urls = set(), []
+    for u in candidates:
+        u = u.rstrip(')')
+        if not u.startswith('http') or u in seen:
+            continue
+        seen.add(u)
+        low = u.lower()
+        if 'tiktokcdn' in low or 'image' in low or low.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')):
+            urls.append(u)
+
+    if not urls:
+        return None
+
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+    paths = []
+    for i, u in enumerate(urls[:12], 1):
+        ext = os.path.splitext(u.split('?')[0])[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+            ext = '.jpg'
+        path = os.path.join(MEDIA_DIR, f'tiktok_{int(time.time() * 1000)}_{i}{ext}')
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s2:
+                kwargs = {**headers, 'Referer': 'https://www.tiktok.com/'}
+                if working:
+                    kwargs['proxy'] = working
+                async with s2.get(u, **kwargs) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.read()
+            if data:
+                with open(path, 'wb') as f:
+                    f.write(data)
+                if os.path.getsize(path) > 0:
+                    paths.append(path)
+        except Exception as ex:
+            logger.warning(f"TikTok image {i} failed: {ex}")
+            continue
+    return paths or None
 
 
 _GEN_OPTS = {
@@ -681,7 +807,15 @@ async def _generic_direct_download(url, *, referer='https://www.pinterest.com/',
     raise ValueError("Файл пуст после скачивания")
 
 
+_DL_LOCK = asyncio.Lock()
+
+
 async def run_download(event_edit_func, url, mode='video', quality=None, timeout=600):
+    async with _DL_LOCK:
+        return await _run_download_impl(event_edit_func, url, mode, quality, timeout)
+
+
+async def _run_download_impl(event_edit_func, url, mode='video', quality=None, timeout=600):
     logger.info(f"[download] Starting: {url} (mode={mode})")
     try:
         is_instagram = 'instagram.com' in url.lower()
@@ -723,6 +857,12 @@ async def run_download(event_edit_func, url, mode='video', quality=None, timeout
         else:
             return await _download_generic(url, mode, event_edit_func)
 
+        if isinstance(filename, list):
+            filename = [p for p in filename if p and os.path.exists(p)]
+            if filename:
+                logger.info(f"[download] OK: {len(filename)} файл(ов) — {url}")
+                return filename
+            filename = None
         if filename and os.path.exists(filename):
             size = format_bytes(os.path.getsize(filename))
             logger.info(f"[download] OK: {filename} ({size})")
@@ -749,24 +889,36 @@ async def run_download(event_edit_func, url, mode='video', quality=None, timeout
 
 
 async def send_and_clean(event_edit_func, client, chat_id, filepath, caption=''):
-    if not filepath or not os.path.exists(filepath):
+    if not filepath:
+        return
+    files = filepath if isinstance(filepath, list) else [filepath]
+    files = [f for f in files if f and os.path.exists(f)]
+    if not files:
         return
     try:
-        size_mb = os.path.getsize(filepath) / 1024 / 1024
+        too_big = [f for f in files if os.path.getsize(f) / 1024 / 1024 > _max_file_size]
     except OSError:
         return
-    if size_mb > _max_file_size:
+    if too_big:
         await event_edit_func(f"❌ Слишком большой файл (> {_max_file_size} МБ).")
     else:
         await event_edit_func("📤 **Отправляю файл...**")
         try:
-            await client.send_file(chat_id, filepath, caption=caption)
+            if len(files) == 1:
+                await client.send_file(chat_id, files[0], caption=caption)
+            else:
+                try:
+                    await client.send_file(chat_id, files, caption=caption)
+                except Exception:
+                    for f in files:
+                        await client.send_file(chat_id, f)
         except Exception as ex:
             await event_edit_func(f"❌ Ошибка отправки: {ex}")
     await asyncio.sleep(5)
-    for _ in range(3):
-        try:
-            os.remove(filepath)
-            break
-        except OSError:
-            await asyncio.sleep(1)
+    for f in files:
+        for _ in range(3):
+            try:
+                os.remove(f)
+                break
+            except OSError:
+                await asyncio.sleep(1)

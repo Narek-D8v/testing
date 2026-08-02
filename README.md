@@ -49,8 +49,6 @@ python main.py
 | `!autodel [on\|off] [сек]` | Автоудаление всех исходящих |
 | `!delay [сек]` | Задержка перед автоответом |
 | `!readreceipt [on\|off]` | Отмечать ЛС прочитанными |
-| `!online` | Статус «онлайн» |
-| `!offline` | Статус «недавно» |
 | `!status_reset` | Сброс всех стелс-режимов |
 
 ### Профиль
@@ -160,7 +158,7 @@ python main.py
 |---------|----------|
 | `!sudo [on\|off] @user` | Управление sudo-доступом |
 | `!watch [on\|off]` | Мониторинг сессий |
-| `!check_email <email>` | Проверка утечек (HIBP) |
+| `!check_email <email>` | Проверка утечек (XposedOrNot) |
 | `!protect [on\|off]` | Защита от удаления чатов |
 
 ### RP-команды
@@ -175,7 +173,8 @@ python main.py
 ## Зависимости
 
 - `telethon` — работа с Telegram API
-- `yt-dlp` — загрузка YouTube
+- `yt-dlp` — загрузка YouTube / TikTok / Instagram (видео, аудио, карточки)
+- `curl_cffi` — обязателен для TikTok/Instagram (имперсонация браузера в yt-dlp)
 - `requests` / `aiohttp` — HTTP-запросы
 - `flask` — веб-статус
 

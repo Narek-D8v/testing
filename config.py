@@ -1,6 +1,10 @@
 import os
 import logging
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -16,6 +20,9 @@ if not API_ID or not API_HASH:
 if not OWNER_ID_RAW:
     raise ValueError("OWNER_ID обязателен. Укажите Telegram ID владельца в .env")
 OWNER_ID = int(OWNER_ID_RAW)
+
+PROXY = os.environ.get('PROXY')
+PROXY_LIST = [p.strip() for p in os.environ.get('PROXY_LIST', '').split(',') if p.strip()]
 
 MAX_COOLDOWN_ENTRIES = 500
 MAX_FILE_SIZE_MB = 1500

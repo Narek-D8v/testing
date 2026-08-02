@@ -60,7 +60,7 @@ def home():
     return "🤖 UserBot работает 24/7!"
 
 def run_web():
-    app.run(host='127.0.0.1', port=PORT)
+    app.run(host=os.environ.get('HOST', '0.0.0.0'), port=PORT)
 
 @client.on(events.NewMessage(pattern=r'!sleep$', func=owner_filter))
 async def sleep_cmd(e):
@@ -1707,9 +1707,10 @@ async def sub_cmd(e):
                 elif isinstance(sub_data, dict):
                     sub_url = sub_data.get('url')
                 if sub_url:
-                    r = requests.get(sub_url, timeout=30)
-                    r.raise_for_status()
-                    return r.text
+                    from urllib.request import Request, urlopen
+                    req = Request(sub_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urlopen(req, timeout=30) as resp:
+                        return resp.read().decode('utf-8', 'ignore')
                 return None
 
         srt_content = await asyncio.to_thread(_get_captions)
