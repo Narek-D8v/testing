@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import glob
 import os
 import re
@@ -47,18 +48,50 @@ def _dl_rotate(sync_fn):
     raise ValueError("Не удалось скачать: нет рабочих прокси")
 
 _COOKIES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+
+def _ensure_cookies_from_env():
+    """Cookie из переменных окружения (приоритет YOUTUBE_COOKIES > COOKIES_B64 > файл)."""
+    env_content = os.environ.get('YOUTUBE_COOKIES') or ''
+    if env_content.strip():
+        with open(_COOKIES_PATH, 'w', encoding='utf-8') as f:
+            f.write(env_content.strip() + '\n')
+        logger.info("cookies.txt создан из YOUTUBE_COOKIES")
+        return True
+    b64 = os.environ.get('COOKIES_B64') or ''
+    if b64.strip():
+        try:
+            decoded = base64.b64decode(b64).decode('utf-8', errors='ignore')
+            with open(_COOKIES_PATH, 'w', encoding='utf-8') as f:
+                f.write(decoded.strip() + '\n')
+            logger.info("cookies.txt создан из COOKIES_B64")
+            return True
+        except Exception as ex:
+            logger.warning(f"Ошибка декодирования COOKIES_B64: {ex}")
+    return False
+
+_ensure_cookies_from_env()
+
 _COOKIES_VALID = False
+_AUTH_COOKIE_KEYS = ('SID', 'SSID', 'HSID', 'APISID', 'SAPISID', '__Secure-1PAPISID',
+                     '__Secure-3PAPISID', '__Secure-3PSID', 'LOGIN_INFO', 'LOGIN')
 if os.path.exists(_COOKIES_PATH):
     with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
         content = f.read()
     if '.youtube.com' in content and ('\tTRUE\t' in content or 'cookie' in content.lower()):
-        _COOKIES_VALID = True
-        logger.info(f"cookies.txt: {len(content)} байт, формат OK")
+        real_auth = [k for k in _AUTH_COOKIE_KEYS
+                     if re.search(r'\t' + re.escape(k) + r'\t', content)]
+        _COOKIES_VALID = bool(real_auth)
+        lines = [l for l in content.splitlines() if l.strip() and not l.startswith('#')]
+        logger.info(f"cookies.txt: {len(lines)} строк, домен youtube — "
+                    f"{'OK, авторизация (' + ', '.join(real_auth[:3]) + ')' if real_auth else 'есть, но авторизующие куки НЕ найдены'}")
+        if not real_auth and 'abc123' in content:
+            logger.warning("cookies.txt похож на шаблон-пример из cookies.txt.example — "
+                           "нужен реальный экспорт из браузера")
     else:
         logger.warning("cookies.txt существует, но похож на неверный формат (нужен Netscape)")
 else:
     logger.info("cookies.txt не найден — скачивание YouTube может не работать без авторизации")
-    logger.info("Создай cookies.txt из cookies.txt.example и заполни своими cookies YouTube")
+    logger.info("Задай YOUTUBE_COOKIES в .env или создай cookies.txt из cookies.txt.example")
 
 def _update_ytdlp():
     try:
@@ -125,6 +158,32 @@ try:
     _HAS_FFMPEG = True
 except Exception:
     pass
+
+_AUTH_WALL_HINTS = (
+    re.compile(r'sign\s?in\s?to\s?confirm', re.I),
+    re.compile(r'confirm you\'?re not a bot', re.I),
+    re.compile(r'requires a Google account', re.I),
+    re.compile(r'log\s*in\s*(is|be|to)', re.I),
+    re.compile(r'required to purchase', re.I),
+    re.compile(r'Insufficient permissions', re.I),
+    re.compile(r'private video', re.I),
+    re.compile(r'HTTP Error 403', re.I),
+    re.compile(r'Video unavailable', re.I),
+    re.compile(r'авторизац', re.I),
+    re.compile(r'требуется вход', re.I),
+    re.compile(r'не прошли проверку', re.I),
+    re.compile(r'блокирует (?:IP|сервер)', re.I),
+)
+
+
+def _is_auth_wall(ex):
+    text = str(ex)
+    return any(p.search(text) for p in _AUTH_WALL_HINTS)
+
+_YT_CLIENT_FALLBACKS = [
+    {'youtube': {'player_client': ['android']}},
+    {'youtube': {'player_client': ['mweb'], 'player_skip': ['hls', 'js']}},
+]
 
 _max_file_size = 1500
 
@@ -272,16 +331,58 @@ def _cli_download(url, output_path):
         return None
 
 
+def _auth_final_error(last_ex):
+    hint = (
+        "YouTube требует авторизацию и блокирует сервер. Варианты:\n"
+        "  1) Обнови cookies (YOUTUBE_COOKIES в .env, формат Netscape)\n"
+        "  2) Укажи рабочий прокси: PROXY=http://лог:пароль@хост:порт или\n"
+        "     PROXY_LIST=ip1,ip2,socks5://... (см. .env.example)\n"
+        "  3) Смени хостинг / используй домашний IP"
+    )
+    return f"YouTube: {last_ex}\n\n🔑 {hint}"
+
+
 def _pick_format_and_download(url, opts, quality, is_audio):
-    try:
-        return _download_with_opts(url, opts, quality, is_audio)
-    except (yt_dlp.utils.DownloadError, ValueError) as ex:
-        if not _COOKIES_VALID:
-            raise
-        logger.warning(f"Первичная загрузка не удалась ({ex}); пробую с cookies.txt (последний вариант)")
-        retry_opts = dict(opts)
-        retry_opts['cookiefile'] = _COOKIES_PATH
-        return _download_with_opts(url, retry_opts, quality, is_audio)
+    last_ex = None
+
+    normal_attempts = [opts]
+    if _COOKIES_VALID:
+        with_cookie = dict(opts)
+        with_cookie['cookiefile'] = _COOKIES_PATH
+        normal_attempts.append(with_cookie)
+
+    for o in normal_attempts:
+        try:
+            return _download_with_opts(url, o, quality, is_audio)
+        except (yt_dlp.utils.DownloadError, ValueError) as ex:
+            last_ex = ex
+            logger.warning(f"Попытка не удалась: {ex}")
+            if not _is_auth_wall(ex):
+                raise
+
+    logger.warning("Стена авторизации: пробую обходные клиенты YouTube (android/mweb)...")
+    for fallback in _YT_CLIENT_FALLBACKS:
+        client_attempts = []
+        o = dict(opts)
+        o['extractor_args'] = fallback
+        o['socket_timeout'] = 45
+        o['extractor_retries'] = 10
+        o['fragment_retries'] = 10
+        client_attempts.append(o)
+        if _COOKIES_VALID:
+            oc = dict(o)
+            oc['cookiefile'] = _COOKIES_PATH
+            client_attempts.append(oc)
+        for oa in client_attempts:
+            try:
+                result = _download_with_opts(url, oa, quality, is_audio)
+                logger.info(f"Обходной клиент {fallback['youtube']['player_client']} сработал")
+                return result
+            except (yt_dlp.utils.DownloadError, ValueError) as ex:
+                last_ex = ex
+                logger.warning(f"Обходной клиент {fallback['youtube']['player_client']} не сработал: {ex}")
+
+    raise ValueError(_auth_final_error(last_ex))
 
 
 def _download_with_opts(url, opts, quality, is_audio):
@@ -864,10 +965,18 @@ async def _run_download_impl(event_edit_func, url, mode='video', quality=None, t
                 return filename
             filename = None
         if filename and os.path.exists(filename):
-            size = format_bytes(os.path.getsize(filename))
-            logger.info(f"[download] OK: {filename} ({size})")
-            return filename
-        logger.warning(f"[download] file not found after download: {url}")
+            size = os.path.getsize(filename)
+            if size < 512:
+                logger.warning(f"[download] подозрительно маленький файл ({size} байт): {filename}")
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+                filename = None
+            else:
+                logger.info(f"[download] OK: {filename} ({format_bytes(size)})")
+                return filename
+        logger.warning(f"[download] file not found or empty after download: {url}")
         return None
     except asyncio.TimeoutError:
         await event_edit_func("❌ Превышено время ожидания (10 мин).")
@@ -903,17 +1012,29 @@ async def send_and_clean(event_edit_func, client, chat_id, filepath, caption='')
         await event_edit_func(f"❌ Слишком большой файл (> {_max_file_size} МБ).")
     else:
         await event_edit_func("📤 **Отправляю файл...**")
-        try:
-            if len(files) == 1:
-                await client.send_file(chat_id, files[0], caption=caption)
-            else:
+        sent = []
+        failed = []
+        for f in files:
+            try:
+                logger.info(f"send file: {f} ({os.path.getsize(f)} байт)")
+            except OSError:
+                logger.warning(f"send file: {f} (размер недоступен)")
+            try:
+                await client.send_file(chat_id, f, caption=caption)
+                sent.append(f)
+            except Exception as ex:
+                logger.warning(f"send as media failed ({f}): {ex}")
                 try:
-                    await client.send_file(chat_id, files, caption=caption)
-                except Exception:
-                    for f in files:
-                        await client.send_file(chat_id, f)
-        except Exception as ex:
-            await event_edit_func(f"❌ Ошибка отправки: {ex}")
+                    await client.send_file(chat_id, f, caption=caption, force_document=True)
+                    sent.append(f)
+                except Exception as ex2:
+                    logger.error(f"send as document failed ({f}): {ex2}")
+                    failed.append((f, ex2))
+        if failed:
+            names = ", ".join(os.path.basename(f) for f, _ in failed)
+            await event_edit_func(f"❌ Не удалось отправить файл(ы): {names}")
+        elif sent:
+            await event_edit_func("✅ Файл(ы) отправлены")
     await asyncio.sleep(5)
     for f in files:
         for _ in range(3):
