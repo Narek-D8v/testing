@@ -37,7 +37,9 @@ class BotState:
         self.autodel_enabled = db.get_state('autodel_enabled', 'False') == 'True'
         self.autodel_delay = int(db.get_state('autodel_delay', '10'))
         self.reply_delay = int(db.get_state('reply_delay', '0'))
-        self.readreceipt_enabled = db.get_state('readreceipt_enabled', 'False') == 'True'
+        # Дефолт — True, как в reset_stealth(): обычный аккаунт читает входящие,
+        # иначе новые ЛС висят непрочитанными. Раньше дефолты расходились.
+        self.readreceipt_enabled = db.get_state('readreceipt_enabled', 'True') == 'True'
         raw_sudo = db.get_state('sudo_users', '')
         self.sudo_users = set(int(x) for x in raw_sudo.split(',') if x.strip())
 
@@ -163,9 +165,11 @@ class BotState:
 
 
 state = BotState()
+# Единый источник общего состояния для main.py (тут — единственные определения):
+# кулдауны команд/ответов, лок загрузки и хэндлеры фоновых задач.
 command_cooldown = defaultdict(float)
 reply_cooldown = {}
-_download_lock = None
+_download_lock = asyncio.Lock()
 _watch_task = None
 _protect_task = None
 
@@ -179,6 +183,12 @@ def owner_filter(event):
 
 
 async def respond(event, text, **kwargs):
+    """Ответ на команду: правка своего сообщения (владелец) или реплай.
+
+    Возвращает Message или None. Вызывающий код часто делает `msg.edit(...)`,
+    поэтому последним шагом идёт отправка нового сообщения: без неё None
+    приводил к AttributeError в хендлере вместо ответа.
+    """
     from telethon.errors import MessageNotModifiedError
 
     if 'parse_mode' not in kwargs:
@@ -200,7 +210,17 @@ async def respond(event, text, **kwargs):
         try:
             return await event.reply(str(text))
         except Exception:
-            return None
+            pass
+    # Последний шанс: отдельное сообщение в тот же чат (например, команду
+    # уже удалили ghost-режимом и edit/reply цепляться не к чему)
+    try:
+        from client import client as _client
+        chat_id = getattr(event, 'chat_id', None)
+        if chat_id:
+            return await _client.send_message(chat_id, str(text))
+    except Exception:
+        pass
+    return None
 
 
 _translator = {}

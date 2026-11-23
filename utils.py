@@ -40,6 +40,20 @@ class SafeEvalError(ValueError):
     pass
 
 
+# Границы вычислений: без них `!calc factorial(100000)` или `9**9**9`
+# занимали event loop на минуты (и съедали память), т.к. считались синхронно.
+_MAX_POW_EXP = 10_000
+_MAX_FACTORIAL = 1_000
+_MAX_SHIFT = 10_000
+_MAX_BITS = 200_000
+
+
+def _guard_bits(value):
+    if isinstance(value, int) and value.bit_length() > _MAX_BITS:
+        raise SafeEvalError("Слишком большое число")
+    return value
+
+
 _SAFE_OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -89,13 +103,26 @@ def _eval_ast(node):
         if isinstance(node.value, (int, float)):
             return node.value
         raise SafeEvalError(f"Недопустимая константа: {type(node.value).__name__}")
+    if isinstance(node, ast.Name):
+        # константы белого списка (pi, e): функции из _SAFE_FUNCS допустимы
+        # только в вызове sqrt(...), отдельным именем — нет
+        value = _SAFE_FUNCS.get(node.id)
+        if value is not None and not callable(value):
+            return value
+        raise SafeEvalError(f"Недопустимое имя: {node.id}")
     if isinstance(node, ast.BinOp):
         op_type = type(node.op)
         if op_type not in _SAFE_OPS:
             raise SafeEvalError(f"Недопустимая операция: {op_type.__name__}")
         left = _eval_ast(node.left)
         right = _eval_ast(node.right)
-        return _SAFE_OPS[op_type](left, right)
+        # Степень/сдвиг с огромным показателем считаются ДО вычисления:
+        # 9**9**9 успел бы съесть память ещё до любой проверки результата
+        if op_type is ast.Pow and isinstance(right, int) and abs(right) > _MAX_POW_EXP:
+            raise SafeEvalError("Слишком большая степень")
+        if op_type in (ast.LShift, ast.RShift) and isinstance(right, int) and abs(right) > _MAX_SHIFT:
+            raise SafeEvalError("Слишком большой сдвиг")
+        return _guard_bits(_SAFE_OPS[op_type](left, right))
     if isinstance(node, ast.UnaryOp):
         op_type = type(node.op)
         if op_type not in _SAFE_OPS:
@@ -109,7 +136,9 @@ def _eval_ast(node):
         if func_name not in _SAFE_FUNCS:
             raise SafeEvalError(f"Недопустимая функция: {func_name}")
         args = [_eval_ast(a) for a in node.args]
-        return _SAFE_FUNCS[func_name](*args)
+        if func_name == 'factorial' and args and isinstance(args[0], int) and args[0] > _MAX_FACTORIAL:
+            raise SafeEvalError("Слишком большой факториал")
+        return _guard_bits(_SAFE_FUNCS[func_name](*args))
     if isinstance(node, ast.List):
         return [_eval_ast(el) for el in node.elts]
     if isinstance(node, ast.Tuple):
@@ -132,17 +161,23 @@ def safe_eval(expr: str):
         return None
 
 
+_RU_UPPER = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'
+_RU_LOWER = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'
+
+
 def caesar(text, shift, dec=False):
+    """Шифр Цезаря: кириллица (33 буквы, Ё после Е) и латиница.
+    Ё/ё обрабатываются корректно — roundtrip восстанавливает текст."""
     if dec:
         shift = -shift
     out = []
     for c in text:
-        if 'А' <= c <= 'я' or c in 'ёЁ':
-            base = ord('А' if c.isupper() or c == 'Ё' else 'а')
-            size = 33
-            out.append(chr((ord(c) - base + shift) % size + base))
+        if c in _RU_UPPER:
+            out.append(_RU_UPPER[(_RU_UPPER.index(c) + shift) % len(_RU_UPPER)])
+        elif c in _RU_LOWER:
+            out.append(_RU_LOWER[(_RU_LOWER.index(c) + shift) % len(_RU_LOWER)])
         elif c.isalpha():
-            base = ord('A' if c.isupper() else 'a')
+            base = ord('A') if c.isupper() else ord('a')
             out.append(chr((ord(c) - base + shift) % 26 + base))
         else:
             out.append(c)
@@ -171,14 +206,35 @@ def gen_pwd(n=16, sym=True):
 
 
 def vigenere(text, key, dec=False):
+    """Шифр Виженера для кириллицы и латиницы. Сдвиг буквы — её позиция
+    в своём алфавите; кириллица больше не портится в латинские кракозябры."""
     key = key.upper()
+    shifts = []
+    for kc in key:
+        if kc in _RU_UPPER:
+            shifts.append(_RU_UPPER.index(kc))
+        elif 'A' <= kc <= 'Z':
+            shifts.append(ord(kc) - ord('A'))
+        else:
+            shifts.append(0)
+    if not shifts:
+        return text
     out, ki = [], 0
     for c in text:
-        if c.isalpha():
-            shift = ord(key[ki % len(key)]) - ord('A')
+        if c in _RU_UPPER or c in _RU_LOWER:
+            shift = shifts[ki % len(shifts)]
             if dec:
                 shift = -shift
-            base = ord('A' if c.isupper() else 'a')
+            if c in _RU_UPPER:
+                out.append(_RU_UPPER[(_RU_UPPER.index(c) + shift) % len(_RU_UPPER)])
+            else:
+                out.append(_RU_LOWER[(_RU_LOWER.index(c) + shift) % len(_RU_LOWER)])
+            ki += 1
+        elif c.isalpha():
+            shift = shifts[ki % len(shifts)]
+            if dec:
+                shift = -shift
+            base = ord('A') if c.isupper() else ord('a')
             out.append(chr((ord(c) - base + shift) % 26 + base))
             ki += 1
         else:
