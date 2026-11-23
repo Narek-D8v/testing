@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+from html import escape as _escape
 
 import aiohttp
 from config import (
@@ -11,8 +13,34 @@ from config import (
     NOTIFY_PROTECT,
     NOTIFY_PM_DELETE,
     NOTIFY_PM_EDIT,
+    NOTIFY_PM_MEDIA,
     NOTIFY_ERRORS,
 )
+
+
+# Тон уведомления зависит от канала: звонок важнее профиля, поэтому источник
+# виден и эмодзи, и текстом, а не общим «появился в сети». Функция вынесена
+# на уровень модуля, чтобы её можно было тестировать без импорта config/env.
+_WATCH_SOURCE_LABELS = {
+    'typing': ('💬', 'печатает вам'),
+    'message': ('✉️', 'написал вам'),
+    'read': ('👁', 'прочитал ваше сообщение'),
+    'update-profile': ('📝', 'обновил профиль'),
+    'update-story': ('📸', 'выложил сторис'),
+    'update-reaction': ('👍', 'отреагировал на ваше сообщение'),
+    'update-call': ('📞', 'звонил вам'),
+    'update-edit': ('✏️', 'правит сообщение в ЛС'),
+}
+
+
+def watch_source_badge(source=None):
+    """(эмодзи, подпись) для источника триггера. Суффиксы поллера
+    (-flicker/-recently) дают нейтральное «появился в сети»."""
+    s = (source or '').lower()
+    for suf in ('-flicker', '-recently'):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return _WATCH_SOURCE_LABELS.get(s, ('⚡', 'появился в сети'))
 
 
 class Notifier:
@@ -25,6 +53,7 @@ class Notifier:
         # business_connection не переотправляет, апдейт приходит только при изменении)
         self.on_business_connection = None
         self._offset = 0
+        self._session = None  # единая aiohttp-сессия (см. _get_session)
         self.enabled = bool(NOTIFY_BOT_TOKEN and NOTIFY_CHAT_ID)
         if self.enabled:
             self._api_base = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}"
@@ -55,6 +84,7 @@ class Notifier:
         disp = (name or '').strip()
         if not disp:
             disp = 'пользователь'
+        disp = _escape(disp)  # имя может содержать < & — ломало parse_mode
 
         if uid_int:
             return f'<a href="tg://user?id={uid_int}">{disp}</a> [<code>{uid_int}</code>]'
@@ -62,33 +92,131 @@ class Notifier:
 
     @staticmethod
     def _markup(buttons):
-        """Инлайн-клавиатура: [[{text, callback_data}, ...], ...] → JSON."""
-        if not buttons:
+        """Инлайн-клавиатура: [[{text, callback_data}, ...], ...] → JSON.
+
+        buttons=[] — явно убрать клавиатуру (пустой inline_keyboard);
+        buttons=None — не трогать разметку.
+        """
+        if buttons is None:
             return None
+        if not buttons:
+            return json.dumps({"inline_keyboard": []})
         return json.dumps({"inline_keyboard": buttons}, ensure_ascii=False)
+
+    async def _get_session(self):
+        """Одна aiohttp-сессия на весь процесс: TCP+TLS-соединение
+        переиспользуется между запросами. Раньше сессия создавалась на каждый
+        вызов — каждая отправка платила рукопожатием, отсюда и задержки."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=100, ttl_dns_cache=300),
+                timeout=aiohttp.ClientTimeout(total=20),
+            )
+        return self._session
 
     async def _api(self, method, payload=None, timeout=15):
         """Универсальный вызов Bot API. Возвращает parsed json или None."""
         if not self.enabled or not self._api_base:
             return None
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.post(f"{self._api_base}/{method}", json=payload or {}) as resp:
-                    data = await resp.json(content_type=None)
-                    if not data.get('ok'):
-                        desc = str(data.get('description') or '')
-                        if 'message is not modified' not in desc:
-                            logger.warning(f"[NOTIFY] {method}: HTTP {resp.status} {desc[:200]}")
-                    return data
+            session = await self._get_session()
+            async with session.post(
+                f"{self._api_base}/{method}",
+                json=payload or {},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if not data.get('ok'):
+                    desc = str(data.get('description') or '')
+                    if 'message is not modified' not in desc:
+                        logger.warning(f"[NOTIFY] {method}: HTTP {resp.status} {desc[:200]}")
+                return data
         except Exception as ex:
             logger.warning(f"[NOTIFY] {method}: {ex}")
             return None
 
+    @staticmethod
+    def _truncate_html(s: str, limit: int = 1000) -> str:
+        """Усечение caption под лимит Bot API (1024) без разрезания тега."""
+        if len(s) <= limit:
+            return s
+        cut = s[:limit]
+        last = cut.rfind('<')
+        if last != -1 and '>' not in cut[last:]:
+            cut = cut[:last]
+        return cut.rstrip() + '…'
+
+    async def send_document(self, path: str, caption: str, chat_id=None):
+        """Отправка файла через Bot API (локальный upload, лимит 50 МБ)."""
+        if not self.enabled or not self._api_base:
+            return False
+        if not path or not os.path.isfile(path):
+            return False
+        target = self.chat_id if chat_id is None else chat_id
+        try:
+            session = await self._get_session()
+            form = aiohttp.FormData()
+            form.add_field('chat_id', str(target))
+            form.add_field('caption', self._truncate_html(caption or ''))
+            form.add_field('parse_mode', 'HTML')
+            with open(path, 'rb') as f:
+                form.add_field('document', f, filename=os.path.basename(path))
+                async with session.post(
+                    f"{self._api_base}/sendDocument",
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=90),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+            ok = bool(data and data.get('ok'))
+            if ok:
+                logger.info(f"[NOTIFY] Файл отправлен: {os.path.basename(path)} -> {target}")
+            else:
+                logger.warning(f"[NOTIFY] sendDocument не удался: {str(data)[:200]}")
+            return ok
+        except Exception as ex:
+            logger.warning(f"[NOTIFY] sendDocument: {ex}")
+            return False
+
+    async def send_sticker(self, path: str, chat_id=None):
+        """Отправка стикера через Bot API (webp/tgs/webm) — у sendSticker
+        нет подписи, поэтому текст уведомления идёт отдельным сообщением."""
+        if not self.enabled or not self._api_base:
+            return False
+        if not path or not os.path.isfile(path):
+            return False
+        target = self.chat_id if chat_id is None else chat_id
+        try:
+            session = await self._get_session()
+            form = aiohttp.FormData()
+            form.add_field('chat_id', str(target))
+            with open(path, 'rb') as f:
+                form.add_field('sticker', f, filename=os.path.basename(path))
+                async with session.post(
+                    f"{self._api_base}/sendSticker",
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+            ok = bool(data and data.get('ok'))
+            if not ok:
+                logger.warning(f"[NOTIFY] sendSticker не удался: {str(data)[:200]}")
+            return ok
+        except Exception as ex:
+            logger.warning(f"[NOTIFY] sendSticker: {ex}")
+            return False
+
+    @staticmethod
+    def _cap(s: str, limit: int) -> str:
+        """Усечение текста с многоточием (лимит sendMessage — 4096)."""
+        return s if len(s) <= limit else s[:limit - 1] + '…'
+
     async def send(self, text: str, preview: bool = False, buttons=None,
-                   business_connection_id=None, chat_id=None):
+                   business_connection_id=None, chat_id=None, return_data=False):
+        """return_data=True — вернуть ответ Bot API (нужен message_id квеста),
+        иначе обычный bool (так его используют все существующие вызовы)."""
         if not self.enabled or not self.url or not self.chat_id:
             logger.warning(f"[NOTIFY] Не отправлено - disabled/enabled={self.enabled} url={bool(self.url)} chat_id={self.chat_id}")
-            return False
+            return None if return_data else False
         target = chat_id if chat_id is not None else self.chat_id
         payload = {
             "chat_id": target,
@@ -102,21 +230,40 @@ class Notifier:
         markup = self._markup(buttons)
         if markup:
             payload["reply_markup"] = markup
-        logger.info(f"[NOTIFY] Отправка в {target} (len={len(text)}, buttons={bool(buttons)})")
-        data = await self._api('sendMessage', payload)
-        ok = bool(data and data.get('ok'))
-        if ok:
-            logger.info(f"[NOTIFY] Успешно отправлено")
-        return ok
+        logger.debug(f"[NOTIFY] Отправка в {target} (len={len(text)}, buttons={bool(buttons)})")
+        # Ретраи: временный сетевой сбой/5xx/429 не должны терять уведомление
+        # (в пакетном удалении одно падение = одно потерянное уведомление).
+        data = None
+        for attempt in range(3):
+            data = await self._api('sendMessage', payload)
+            if data and data.get('ok'):
+                logger.debug("[NOTIFY] Успешно отправлено")
+                return data if return_data else True
+            desc = str((data or {}).get('description') or '')
+            if 'Bad Request' in desc:
+                # семантическая ошибка (разметка/лимиты) — повтор не поможет
+                logger.warning(f"[NOTIFY] sendMessage отклонён: {desc[:200]}")
+                return None if return_data else False
+            if attempt < 2:
+                retry_after = 0
+                try:
+                    retry_after = int(((data or {}).get('parameters') or {}).get('retry_after') or 0)
+                except Exception:
+                    retry_after = 0
+                await asyncio.sleep(retry_after or (0.5 + 1.0 * attempt))
+        logger.warning(f"[NOTIFY] sendMessage не удался после 3 попыток: {str(data)[:200]}")
+        return None if return_data else False
 
     async def edit(self, message_id: int, text: str, buttons=None, preview: bool = False,
-                   business_connection_id=None):
+                   business_connection_id=None, chat_id=None):
         """Редактирует сообщение бота. Для сообщений, отправленных от имени
-        аккаунта (Telegram Business), обязателен business_connection_id."""
-        if not self.enabled or not self.chat_id:
+        аккаунта (Telegram Business), обязателен business_connection_id.
+        chat_id — чат, где лежит сообщение (по умолчанию чат с ботом);
+        для меню в чужом ЛС указывается chat_id из callback-запроса."""
+        if not self.enabled:
             return False
         payload = {
-            "chat_id": self.chat_id,
+            "chat_id": self.chat_id if chat_id is None else chat_id,
             "message_id": message_id,
             "text": text,
             "parse_mode": "HTML",
@@ -214,16 +361,18 @@ class Notifier:
                 continue
             await self._process_updates(data.get('result'), handler, message_handler)
 
-    async def online_watch(self, username: str, target_id: int, sent_msg: str):
+    async def online_watch(self, username: str, target_id: int, sent_msg: str,
+                           name: str = None, source: str = None):
         if not NOTIFY_ONLINE_WATCH:
             return
-        user_str = self._format_user(target_id, username=username)
+        user_str = self._format_user(target_id, username=username, name=name)
+        emoji, label = watch_source_badge(source)
         msg = (
-            f"⚡ <b>ONLINE WATCH</b>\n\n"
+            f"{emoji} <b>ONLINE WATCH</b>\n\n"
             f"👤 Пользователь: {user_str}\n"
-            f"🟢 Статус: <b>появился в сети</b>\n\n"
+            f"🟢 Статус: <b>{label}</b>\n\n"
             f"✉️ <b>Сообщение отправлено таргету:</b>\n"
-            f"<blockquote>{sent_msg}</blockquote>"
+            f"<blockquote>{_escape(self._cap(sent_msg or '', 3000))}</blockquote>"
         )
         await self.send(msg)
 
@@ -239,12 +388,53 @@ class Notifier:
         'document': 'Файл',
     }
 
-    async def pm_deleted(self, chat_id: int, sender_id: int, sender_name: str, text: str, has_media: bool, media_type: str, username: str = None, cached: bool = True):
+    @staticmethod
+    def _fmt_size(size) -> str:
+        """Размер файла по-человечески: 850 Б / 12.4 КБ / 3.1 МБ."""
+        try:
+            n = int(size or 0)
+        except (TypeError, ValueError):
+            return ''
+        if n <= 0:
+            return ''
+        if n < 1024:
+            return f"{n} Б"
+        for unit in ('КБ', 'МБ', 'ГБ'):
+            n /= 1024.0
+            if n < 1024 or unit == 'ГБ':
+                return f"{n:.1f} {unit}"
+        return ''
+
+    @staticmethod
+    def _chat_link(chat_id, msg_id=None) -> str:
+        """Ссылка, открывающая диалог/пост. Самого сообщения уже нет,
+        поэтому для ЛС ведём на чат с user_id (chat_id положительный),
+        для супергрупп/каналов — на t.me/c/<id>/<msg>."""
+        try:
+            cid = int(chat_id)
+        except (TypeError, ValueError):
+            return ''
+        try:
+            mid = int(msg_id or 0)
+        except (TypeError, ValueError):
+            mid = 0
+        if cid > 0:
+            link = f"tg://openmessage?user_id={cid}"
+            return f"{link}&message_id={mid}" if mid else link
+        if str(cid).startswith('-100'):
+            internal = str(cid)[4:]
+            return f"https://t.me/c/{internal}/{mid}" if mid else f"https://t.me/c/{internal}"
+        link = f"tg://openmessage?chat_id={abs(cid)}"
+        return f"{link}&message_id={mid}" if mid else link
+
+    async def pm_deleted(self, chat_id: int, sender_id: int, sender_name: str, text: str, has_media: bool, media_type: str, username: str = None, cached: bool = True, media_file: str = None, file_name: str = None, file_size=None, msg_id=None):
         if not NOTIFY_PM_DELETE:
-            return
+            return False
         label = self._MEDIA_LABELS.get(media_type or '', 'Медиа')
         if text and text.strip():
-            body = text.strip()
+            # экранируем: текст сообщения с '<' или '&' иначе ломает parse_mode
+            # и Bot API отвечает 400 — уведомление терялось
+            body = self._cap(_escape(text.strip()), 3500)
         elif not cached:
             # строки в кэше не было вовсе — сообщение пришло до старта бота
             body = "Сообщение не найдено в кэше юзербота. Вероятно, оно было отправлено до запуска бота или уже не закэшировано."
@@ -256,31 +446,98 @@ class Notifier:
         user_str = self._format_user(sender_id, username=username, name=sender_name)
         media_info = ""
         if has_media:
-            media_info = f"📎 {label}\n" if media_type else "📎 Медиа: да\n"
+            bits = [label if media_type else 'Медиа']
+            if file_name:
+                bits.append(_escape(str(file_name)))
+            size_str = self._fmt_size(file_size)
+            if size_str:
+                bits.append(size_str)
+            media_info = "📎 " + " · ".join(bits) + "\n"
+        link = self._chat_link(chat_id, msg_id)
+        link_line = f'🔗 <a href="{link}">открыть чат</a>\n' if link else ''
         msg = (
             f"🗑 <b>ЛС | СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
             f"💬 Чат: <code>{chat_id}</code>\n"
+            f"{link_line}"
             f"👤 От: {user_str}\n"
             f"{media_info}\n"
             f"<b>Текст:</b>\n<blockquote>{body}</blockquote>"
         )
-        await self.send(msg)
+        # если медиа успели сохранить заранее — шлём сам файл с подписью
+        if media_file:
+            try:
+                if media_type == 'sticker':
+                    # стикер показываем как стикер (у него нет caption),
+                    # а текст уведомления отправляем отдельным сообщением
+                    if await self.send_sticker(media_file):
+                        await self.send(msg)
+                        return True
+                elif await self.send_document(media_file, msg):
+                    return True
+            except Exception as ex:
+                logger.warning(f"[NOTIFY] pm_deleted media: {ex}")
+        return await self.send(msg)
 
-    async def pm_edited(self, chat_id: int, sender_id: int, sender_name: str, old_text: str, new_text: str, username: str = None):
+    async def pm_media(self, chat_id, old, path, note):
+        """Пересылка медиа (фото/видео) через внешнего бота с подписью:
+        сохранение по реплаю на сгорающее или при удалении отправленного медиа.
+        old — строка кэша pm_msg_cache (или её аналог)."""
+        if not NOTIFY_PM_MEDIA:
+            return False
+        old = old or {}
+        sender_id = old.get('sender_id') or 0
+        sender_name = old.get('sender_name') or ''
+        text = (old.get('text') or '').strip()
+        mtype = old.get('media_type') or ''
+        label = self._MEDIA_LABELS.get(mtype, 'Медиа')
+        user_str = self._format_user(sender_id, name=sender_name)
+        # имя файла и размер — чтобы было понятно, что именно сохранили
+        fname = old.get('file_name') or ''
+        if not fname and path and mtype not in ('photo', 'video', 'video_note', 'sticker', 'voice'):
+            fname = os.path.basename(path)
+        fsize = old.get('file_size') or 0
+        if not fsize and path and os.path.isfile(path):
+            try:
+                fsize = os.path.getsize(path)
+            except OSError:
+                fsize = 0
+        info = label
+        if fname:
+            info += f" · {_escape(str(fname))}"
+        size_str = self._fmt_size(fsize)
+        if size_str:
+            info += f" · {size_str}"
+        parts = [
+            f"{note}\n",
+            f"💬 Чат: <code>{chat_id}</code>",
+            f"👤 От: {user_str}",
+            f"📎 Тип: {info}",
+        ]
+        if text:
+            parts.append(f"<b>Подпись:</b>\n<blockquote>{_escape(self._cap(text, 700))}</blockquote>")
+        caption = "\n".join(parts)
+        if not path or not os.path.isfile(path):
+            return False  # файла нет — вызывающий код сообщит об этом сам
+        return await self.send_document(path, caption)
+
+    async def pm_edited(self, chat_id: int, sender_id: int, sender_name: str, old_text: str, new_text: str, username: str = None, msg_id=None):
         if not NOTIFY_PM_EDIT:
             return
         if old_text and old_text.strip():
-            old = old_text.strip()
+            old = self._cap(_escape(old_text.strip()), 1700)
         else:
             old = "Сообщение не найдено в кэше юзербота. Редактирование зафиксировано, но изначальный текст неизвестен."
         if new_text and new_text.strip():
-            new = new_text.strip()
+            new = self._cap(_escape(new_text.strip()), 1700)
         else:
             new = "(пусто)"
         user_str = self._format_user(sender_id, username=username, name=sender_name)
+        link = self._chat_link(chat_id, msg_id)
+        link_line = f'🔗 <a href="{link}">открыть чат</a>\n' if link else ''
         msg = (
             f"✏️ <b>ЛС | СООБЩЕНИЕ ИЗМЕНЕНО</b>\n\n"
             f"💬 Чат: <code>{chat_id}</code>\n"
+            f"{link_line}"
             f"👤 От: {user_str}\n\n"
             f"<b>Было:</b>\n<blockquote>{old}</blockquote>\n\n"
             f"<b>Стало:</b>\n<blockquote>{new}</blockquote>"
@@ -292,10 +549,10 @@ class Notifier:
             return
         msg = (
             f"🔐 <b>НОВАЯ СЕССИЯ</b>\n\n"
-            f"📱 Устройство: <b>{device}</b>\n"
-            f"💻 Платформа: <b>{platform}</b>\n"
-            f"🌐 IP: <code>{ip}</code>\n"
-            f"🕒 Дата: <code>{date}</code>"
+            f"📱 Устройство: <b>{_escape(device)}</b>\n"
+            f"💻 Платформа: <b>{_escape(platform)}</b>\n"
+            f"🌐 IP: <code>{_escape(ip)}</code>\n"
+            f"🕒 Дата: <code>{_escape(date)}</code>"
         )
         await self.send(msg)
 
@@ -318,8 +575,8 @@ class Notifier:
             det = det[:1000] + "..."
         msg = (
             f"⚠️ <b>ОШИБКА ЮЗЕРБОТА</b>\n\n"
-            f"📌 {title}\n\n"
-            f"<code>{det}</code>"
+            f"📌 {_escape(title)}\n\n"
+            f"<code>{_escape(det)}</code>"
         )
         await self.send(msg)
 
