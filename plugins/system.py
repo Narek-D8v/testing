@@ -35,7 +35,7 @@ async def wake_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!setreply(?:\s+(\S+))?(?:\s+(.+))?', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!setreply(?:\s+(\S+))?(?:\s+(.+))?$', func=owner_filter))
 async def setreply_cmd(e):
 
     text, _ = normalize_command_text(e)

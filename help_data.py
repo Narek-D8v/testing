@@ -118,8 +118,12 @@ CMD_DESCS = {
     'rphelp':       {'desc': 'Список RP-команд', 'syntax': '!rphelp', 'example': '!rphelp'},
     'trhelp':       {'desc': 'Список кодов языков для !translate', 'syntax': '!trhelp', 'example': '!trhelp'},
     'summary':      {'desc': 'Выжимка переписки в 3 предложениях', 'syntax': '!summary @ник [n]', 'example': '!summary @username 50'},
-    'vibe':         {'desc': 'Настроение собеседника: агрессия, симпатия, вовлечённость', 'syntax': '!vibe @ник', 'example': '!vibe @username'},
-    'liar':         {'desc': 'Найти противоречия в словах собеседника', 'syntax': '!liar @ник', 'example': '!liar @username'},
+    'vibe':         {'desc': 'Настроение: шкалы, цитаты-доказательства, динамика и советы', 'syntax': '!vibe @ник', 'example': '!vibe @username'},
+    'liar':         {'desc': 'Противоречия: цитаты с датами, достоверность, вопросы', 'syntax': '!liar @ник', 'example': '!liar @username'},
+    'promises':     {'desc': 'Обещания: невыполненные помнятся между перезапусками', 'syntax': '!promises @ник | !promises done <id> | !promises all', 'example': '!promises @username'},
+    'mediation':    {'desc': 'План примирения с готовыми формулировками', 'syntax': '!mediation @ник [мягко|жёстко]', 'example': '!mediation @username мягко'},
+    'reality':      {'desc': 'Отделяет факты-цитаты от интерпретаций', 'syntax': '!reality @ник', 'example': '!reality @username'},
+    'roles':        {'desc': 'Роли участников чата с уверенностью в процентах', 'syntax': '!roles @ник|ID|чат', 'example': '!roles @username'},
     'sync':         {'desc': 'Сохранить историю переписки в базу для AI', 'syntax': '!sync @ник [кол-во]', 'example': '!sync @username 200'},
     'fact':         {'desc': 'Добавить/очистить факты о человеке', 'syntax': '!fact @ник текст | !fact clear @ник', 'example': '!fact @username любит кофе'},
     'facts':        {'desc': 'Показать факты о человеке', 'syntax': '!facts @ник', 'example': '!facts @username'},
@@ -153,7 +157,8 @@ COMMANDS_LIST = {
         '!unonwatch', '!pmwatch'
     ],
     'ии': [
-        '!summary', '!vibe', '!liar', '!sync', '!fact', '!facts',
+        '!summary', '!vibe', '!liar', '!promises', '!mediation',
+        '!reality', '!roles', '!sync', '!fact', '!facts',
         '!rewrite', '!fix', '!factcheck', '!args', '!tr',
         '!ocr', '!tts', '!circle',
         '!auto', '!style', '!prompt', '!blacklist', '!whitelist',
@@ -208,7 +213,8 @@ EMOJI_MAP = {
 # выводятся одним блоком в порядке COMMANDS_LIST.
 CAT_GROUPS = {
     'ии': [
-        ('Анализ переписки', ['!summary', '!vibe', '!liar', '!sync',
+        ('Анализ переписки', ['!summary', '!vibe', '!liar', '!promises',
+                              '!mediation', '!reality', '!roles', '!sync',
                               '!fact', '!facts']),
         ('Редактура', ['!rewrite', '!fix', '!factcheck', '!args', '!tr']),
         ('Медиа', ['!ocr', '!tts', '!circle']),

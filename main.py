@@ -15,6 +15,7 @@ from telethon.tl import types
 
 from config import (
     PORT, MEDIA_DIR, MAX_COOLDOWN_ENTRIES, MAX_FILE_SIZE_MB, WEB_TOKEN, LOCK_PATH, logger,
+    validate_config,
 )
 from notifier import notify
 from utils import fmt_time
@@ -924,6 +925,7 @@ if __name__ == "__main__":
     from telethon.errors import AuthKeyDuplicatedError
 
     print("🚀 Запуск UserBot...")
+    validate_config()
     os.makedirs(MEDIA_DIR, exist_ok=True)
     threading.Thread(target=run_web, daemon=True).start()
 

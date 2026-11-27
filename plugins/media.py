@@ -16,7 +16,7 @@ _log = logger
 
 
 
-@client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!ytshow\s+(.+)$', func=owner_filter))
 async def ytshow_cmd(e):
 
     raw = e.pattern_match.group(1).strip()
@@ -171,7 +171,7 @@ async def safe_edit(msg, text):
         pass
 
 
-@client.on(events.NewMessage(pattern=r'!audio\s+(.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!audio\s+(.+)$', func=owner_filter))
 async def audio_cmd(e):
 
     raw = e.pattern_match.group(1).strip()

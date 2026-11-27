@@ -224,7 +224,7 @@ async def lucky_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!choose (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!choose (.+)$', func=owner_filter))
 async def choose_cmd(e):
 
     raw = e.pattern_match.group(1)

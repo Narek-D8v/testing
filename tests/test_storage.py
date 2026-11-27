@@ -262,5 +262,37 @@ class TestStorage(unittest.TestCase):
         self.assertIsNone(self.db.get_note('тест-заметка'))
 
 
+    def test_promises_survive_restart_and_dedupe(self):
+        from storage import Storage
+        path = os.path.join(self.tmpdir, 'promises_restart.db')
+        db = Storage(path)
+        try:
+            added = db.save_ai_promises(555, [
+                {'text': 'верну телефон', 'who_label': 'Жена',
+                 'due_at': '03.01', 'note': 'в поиске'},
+                {'text': 'верну телефон', 'who_label': 'Жена'},
+            ])
+            self.assertEqual(added, 1)
+            rows = db.get_ai_promises(555)
+            self.assertEqual(len(rows), 1)
+            pid = rows[0]['id']
+            self.assertEqual(rows[0]['status'], 'open')
+        finally:
+            db.close()
+
+        db2 = Storage(path)
+        try:
+            rows = db2.get_ai_promises(555)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['text'], 'верну телефон')
+            self.assertTrue(db2.mark_ai_promise(pid, 'done', note='подтверждено'))
+            self.assertEqual(db2.get_ai_promises(555), [])
+            archive = db2.get_ai_promises(555, status=None)
+            self.assertEqual(len(archive), 1)
+            self.assertEqual(archive[0]['status'], 'done')
+        finally:
+            db2.close()
+
+
 if __name__ == '__main__':
     unittest.main()

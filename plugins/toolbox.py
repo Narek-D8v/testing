@@ -21,7 +21,7 @@ import qrcode
 from PIL import Image, ImageDraw
 
 
-@client.on(events.NewMessage(pattern=r'!calc (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!calc (.+)$', func=owner_filter))
 async def calc_cmd(e):
 
     expr = e.pattern_match.group(1).strip()
@@ -53,7 +53,7 @@ async def reminder_worker():
             logger.error(f"reminder_worker error: {ex}")
         await asyncio.sleep(10)
 
-@client.on(events.NewMessage(pattern=r'!remind (\d+)\s+(.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!remind (\d+)\s+(.+)$', func=owner_filter))
 async def remind_cmd(e):
 
     delay = int(e.pattern_match.group(1))
@@ -132,7 +132,7 @@ async def search_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!shorten (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!shorten (.+)$', func=owner_filter))
 async def shorten_cmd(e):
 
     url = e.pattern_match.group(1).strip()
@@ -154,7 +154,7 @@ async def shorten_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!weather (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!weather (.+)$', func=owner_filter))
 async def weather_cmd(e):
 
     city = e.pattern_match.group(1).strip()
@@ -253,7 +253,7 @@ def _to_english(text):
         return text
 
 
-@client.on(events.NewMessage(pattern=r'!translate(?: ([a-z]{2}))? (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!translate(?: ([a-z]{2}))? (.+)$', func=owner_filter))
 async def translate_cmd(e):
 
     target_lang = e.pattern_match.group(1) or 'ru'
@@ -268,7 +268,7 @@ async def translate_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!base64 (encode|decode) (.+)$', func=owner_filter))
 async def base64_cmd(e):
 
     mode, text = e.pattern_match.group(1), e.pattern_match.group(2).strip()
@@ -285,7 +285,7 @@ async def base64_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!hash (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!hash (.+)$', func=owner_filter))
 async def hash_cmd(e):
 
     text = e.pattern_match.group(1).strip().encode()
@@ -301,7 +301,7 @@ async def hash_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!morse (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!morse (.+)$', func=owner_filter))
 async def morse_cmd(e):
 
     text = e.pattern_match.group(1).strip()
@@ -311,7 +311,7 @@ async def morse_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!caesar (encode|decode) (\d+) (.+)$', func=owner_filter))
 async def caesar_cmd(e):
 
     mode, shift, text = e.pattern_match.group(1), int(e.pattern_match.group(2)), e.pattern_match.group(3)
@@ -322,7 +322,7 @@ async def caesar_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!vigenere (encode|decode) (\S+) (.+)$', func=owner_filter))
 async def vigenere_cmd(e):
 
     mode, key, text = e.pattern_match.group(1), e.pattern_match.group(2), e.pattern_match.group(3)
@@ -347,7 +347,7 @@ async def password_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!qr (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!qr (.+)$', func=owner_filter))
 async def qr_cmd(e):
 
     text = e.pattern_match.group(1).strip()
@@ -375,7 +375,7 @@ async def uuid_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!color (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!color (.+)$', func=owner_filter))
 async def color_cmd(e):
 
     raw = e.pattern_match.group(1).strip().replace(' ', '')
@@ -406,7 +406,7 @@ async def color_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!ascii (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!ascii (.+)$', func=owner_filter))
 async def ascii_cmd(e):
 
     text = e.pattern_match.group(1).strip()

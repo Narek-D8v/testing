@@ -63,7 +63,7 @@ async def avatar_cmd(e):
 
 
 
-@client.on(events.NewMessage(pattern=r'!name (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!name (.+)$', func=owner_filter))
 async def name_cmd(e):
 
     n = e.pattern_match.group(1).strip()
@@ -92,7 +92,7 @@ async def bio_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!whois (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!whois (.+)$', func=owner_filter))
 async def whois_cmd(e):
 
     text, _ = normalize_command_text(e)

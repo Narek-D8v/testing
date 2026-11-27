@@ -55,7 +55,8 @@ class AIEngine:
                 seen.append(name)
         self._models = tuple(seen)
 
-    async def generate(self, prompt, system_prompt=None, image_bytes=None):
+    async def generate(self, prompt, system_prompt=None, image_bytes=None,
+                       json_mode=False):
         """Вернуть (текст, провайдер). Сначала Gemini, затем OpenRouter.
 
         Картинку понимает только Gemini: для OCR нельзя молча отдавать
@@ -65,7 +66,8 @@ class AIEngine:
             gem_err = None
             if GEMINI_API_KEY:
                 try:
-                    return await self._gemini(prompt, system_prompt, image_bytes), "Gemini"
+                    return await self._gemini(
+                        prompt, system_prompt, image_bytes, json_mode), "Gemini"
                 except Exception as ex:
                     gem_err = ex
                     logger.warning(f"Gemini недоступен: {ex}")
@@ -79,7 +81,8 @@ class AIEngine:
 
             if OPENROUTER_API_KEY:
                 try:
-                    return await self._openrouter(prompt, system_prompt), "OpenRouter"
+                    return await self._openrouter(
+                        prompt, system_prompt, json_mode), "OpenRouter"
                 except Exception as ex:
                     logger.warning(f"OpenRouter недоступен: {ex}")
                     raise AIError(
@@ -92,7 +95,7 @@ class AIEngine:
                 f"Gemini: {self._fmt(gem_err)}"
             )
 
-    async def _gemini(self, prompt, system_prompt, image_bytes):
+    async def _gemini(self, prompt, system_prompt, image_bytes, json_mode=False):
         parts = []
         if prompt:
             parts.append({"text": prompt})
@@ -103,9 +106,14 @@ class AIEngine:
                     "data": base64.b64encode(image_bytes).decode('ascii'),
                 }
             })
+        generation = {"temperature": AI_TEMPERATURE}
+        if json_mode:
+            # Gemini умеет forcing JSON — это резко снижает долю ответов,
+            # которые приходится спасать parse_ai_json().
+            generation["responseMimeType"] = "application/json"
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": AI_TEMPERATURE},
+            "generationConfig": generation,
         }
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
@@ -117,17 +125,30 @@ class AIEngine:
                 model = self._models[idx]
                 url = _GEMINI_URL.format(model=model)
                 try:
-                    async with session.post(
-                        url,
-                        params={"key": GEMINI_API_KEY},
-                        json=payload,
-                    ) as resp:
-                        body = await resp.text()
-                        if resp.status != 200:
-                            last_err = AIError(f"{model}: HTTP {resp.status} — {body[:300]}")
-                            logger.warning(f"Gemini {model} недоступен: HTTP {resp.status}")
-                            continue
-                        data = await resp.json(content_type=None)
+                    data = None
+                    for attempt in (0, 1):
+                        async with session.post(
+                            url,
+                            params={"key": GEMINI_API_KEY},
+                            json=payload,
+                        ) as resp:
+                            body = await resp.text()
+                            if resp.status == 200:
+                                data = await resp.json(content_type=None)
+                                break
+                            if (resp.status == 400 and attempt == 0
+                                    and 'responseMimeType' in generation):
+                                # Старые модели не понимают responseMimeType —
+                                # повторяем тот же запрос без строгого режима.
+                                generation.pop('responseMimeType')
+                                continue
+                            last_err = AIError(
+                                f"{model}: HTTP {resp.status} — {body[:300]}")
+                            logger.warning(
+                                f"Gemini {model} недоступен: HTTP {resp.status}")
+                            break
+                    if data is None:
+                        continue
                 except (aiohttp.ClientError, asyncio.TimeoutError) as ex:
                     last_err = AIError(f"{model}: сеть недоступна — {ex}")
                     continue
@@ -148,7 +169,7 @@ class AIEngine:
             f"Все Gemini-модели недоступны: {self._fmt(last_err)}"
         ) from last_err
 
-    async def _openrouter(self, prompt, system_prompt):
+    async def _openrouter(self, prompt, system_prompt, json_mode=False):
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -158,6 +179,8 @@ class AIEngine:
             "messages": messages,
             "temperature": AI_TEMPERATURE,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -165,11 +188,17 @@ class AIEngine:
         try:
             timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(_OPENROUTER_URL, json=payload, headers=headers) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        raise AIError(f"HTTP {resp.status} — {body[:300]}")
-                    data = await resp.json(content_type=None)
+                for attempt in (0, 1):
+                    async with session.post(
+                            _OPENROUTER_URL, json=payload, headers=headers) as resp:
+                        if resp.status != 200:
+                            body = await resp.text()
+                            if resp.status == 400 and attempt == 0 and json_mode:
+                                payload.pop('response_format', None)
+                                continue
+                            raise AIError(f"HTTP {resp.status} — {body[:300]}")
+                        data = await resp.json(content_type=None)
+                        break
         except aiohttp.ClientError as ex:
             raise AIError(f"сеть недоступна — {ex}") from ex
 

@@ -11,6 +11,8 @@ python main.py
 
 ### Переменные окружения
 
+Полный шаблон с комментариями — в `.env.example`.
+
 | Переменная | Описание |
 |-----------|----------|
 | `API_ID` | API ID из my.telegram.org (обязательно) |
@@ -329,11 +331,12 @@ python main.py
 │   └── pipeline.py  #   очередь по платформам, run_download, отправка и очистка
 ├── notifier.py      # Внешний уведомляющий бот
 ├── ai_engine.py     # Gemini REST → OpenRouter (текст и Vision)
-├── ai_utils.py      # Чистые помощники: раскладка, транскрипт, JSON квеста
+├── ai_utils.py      # Чистые помощники: раскладка, транскрипт, JSON и форматирование AI
 ├── rp_commands.py   # RP-команды (словари)
 ├── storage.py       # Хранилище (SQLite)
 ├── tests/           # Юнит-тесты: python -m unittest discover -s tests -v
 ├── scripts/         # Ручные проверки (сеть): check_yt.py, check_wiki.py
+├── .github/workflows/tests.yml  # CI: install requirements + unit tests
 ├── requirements.txt # Зависимости
 ├── build.sh         # Скрипт сборки для хостинга
 ├── .gitignore       # Секреты, сессии, БД и media в репозиторий не попадают
@@ -343,4 +346,13 @@ python main.py
 ## Статистика и тесты
 
 - `GET /stats` — JSON-дашборд (команды, треки onwatch, напоминания, размер media/).
-- Тесты: `python -m unittest discover -s tests -v` (без .env не требуются).
+- Тесты: `python -m unittest discover -s tests -v`. Тесты не требуют `.env`
+  (значения-заглушки задаёт `tests/test_downloaders.py`, а CI задаёт их через env).
+- Ответы AI приходят в Telegram HTML: `!vibe`, `!liar` и `!summary` запрашивают
+  строгий JSON (режим JSON у Gemini/OpenRouter) и рендерятся детерминированно,
+  остальные AI-команды конвертируют Markdown модели в безопасный HTML. Сырые
+  `**`, `>` и `*   ` в чат не попадают.
+- `!vibe` показывает шкалы с визуальным баром, цитаты-доказательства, динамику,
+  триггеры и совет. `!liar` — вердикт, шкалу достоверности, цитаты с датами,
+  контекстом и уровнем серьёзности, неподтверждённые утверждения и вопросы.
+  Обе команды считают количество проанализированных сообщений локально.

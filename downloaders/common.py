@@ -56,34 +56,56 @@ def _dl_rotate(sync_fn):
 # cookies.txt лежит в корне проекта, а не рядом с пакетом (__file__ теперь downloaders/common.py)
 _COOKIES_PATH = os.path.join(BASE_DIR, 'cookies.txt')
 
-def _ensure_cookies_from_env():
-    """Cookie из переменных окружения (приоритет YOUTUBE_COOKIES > COOKIES_B64 > файл)."""
+def _cookies_from_env():
+    """Вернуть (содержимое, из env) без записи на диск: импорт не должен трогать файлы."""
     env_content = os.environ.get('YOUTUBE_COOKIES') or ''
     if env_content.strip():
-        with open(_COOKIES_PATH, 'w', encoding='utf-8') as f:
-            f.write(env_content.strip() + '\n')
-        logger.info("cookies.txt создан из YOUTUBE_COOKIES")
-        return True
+        return env_content.strip() + '\n', True
     b64 = os.environ.get('COOKIES_B64') or ''
     if b64.strip():
         try:
             decoded = base64.b64decode(b64).decode('utf-8', errors='ignore')
-            with open(_COOKIES_PATH, 'w', encoding='utf-8') as f:
-                f.write(decoded.strip() + '\n')
-            logger.info("cookies.txt создан из COOKIES_B64")
-            return True
+            return decoded.strip() + '\n', True
         except Exception as ex:
             logger.warning(f"Ошибка декодирования COOKIES_B64: {ex}")
-    return False
+    return None, False
 
-_ensure_cookies_from_env()
+
+def _cookies_content():
+    content, _ = _cookies_from_env()
+    if content is not None:
+        return content
+    if os.path.exists(_COOKIES_PATH):
+        with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    return ''
+
+
+def _ensure_cookies_from_env():
+    """Записать cookies.txt из env перед реальной загрузкой, а не при импорте."""
+    content, from_env = _cookies_from_env()
+    if not from_env:
+        return False
+    try:
+        current = None
+        if os.path.exists(_COOKIES_PATH):
+            with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
+                current = f.read()
+        if current != content:
+            with open(_COOKIES_PATH, 'w', encoding='utf-8') as f:
+                f.write(content)
+        logger.info("cookies.txt подготовлен из переменных окружения")
+        return True
+    except OSError as ex:
+        logger.warning(f"Не удалось записать cookies.txt: {ex}")
+        return False
+
 
 _COOKIES_VALID = False
 _AUTH_COOKIE_KEYS = ('SID', 'SSID', 'HSID', 'APISID', 'SAPISID', '__Secure-1PAPISID',
                      '__Secure-3PAPISID', '__Secure-3PSID', 'LOGIN_INFO', 'LOGIN')
-if os.path.exists(_COOKIES_PATH):
-    with open(_COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
-        content = f.read()
+if _cookies_content():
+    content = _cookies_content()
     if '.youtube.com' in content and ('\tTRUE\t' in content or 'cookie' in content.lower()):
         real_auth = [k for k in _AUTH_COOKIE_KEYS
                      if re.search(r'\t' + re.escape(k) + r'\t', content)]
@@ -115,6 +137,7 @@ def _ensure_runtime():
     if _runtime_ready:
         return
     _runtime_ready = True
+    _ensure_cookies_from_env()
     if os.environ.get('UPDATE_YTDLP', '').strip().lower() in ('1', 'true', 'yes', 'on'):
         _update_ytdlp()
     try:

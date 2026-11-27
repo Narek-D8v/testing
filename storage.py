@@ -12,6 +12,7 @@ _VALID_TABLES = frozenset({
     'reply_settings', 'sessions', 'protected_chats',
     'online_watch', 'pm_msg_cache', 'reminders',
     'ai_msgs', 'ai_facts', 'ai_auto', 'ai_lists', 'ai_flags', 'ai_quest',
+    'ai_promises',
 })
 
 # Чёрный список ЛС для слежки за удалениями/правками (!pmwatch mute).
@@ -45,6 +46,14 @@ class Storage:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Одно соединение используется и event loop'ом, и Flask-потоком.
+        # WAL снижает конкуренцию между чтением и записью, busy_timeout —
+        # защищает от мгновенного «database is locked» при коротком конфликте.
+        try:
+            self.conn.execute('PRAGMA journal_mode=WAL')
+            self.conn.execute('PRAGMA busy_timeout=5000')
+        except sqlite3.Error:
+            pass
         self.lock = threading.Lock()
         self._create_tables()
 
@@ -156,6 +165,20 @@ class Storage:
                     chat_id INTEGER PRIMARY KEY,
                     state TEXT
                 );
+                CREATE TABLE IF NOT EXISTS ai_promises (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    peer_id INTEGER NOT NULL,
+                    promiser_id INTEGER,
+                    who_label TEXT DEFAULT '',
+                    source_msg_id INTEGER,
+                    text TEXT NOT NULL,
+                    due_at TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at INTEGER NOT NULL,
+                    resolved_at INTEGER,
+                    last_checked_at INTEGER,
+                    note TEXT DEFAULT ''
+                );
             ''')
             # Миграция для существующих баз: добавляем отсутствующие колонки
             cur.execute('PRAGMA table_info(pm_msg_cache)')
@@ -201,6 +224,8 @@ class Storage:
             if 'msg_id' not in acols:
                 cur.execute('ALTER TABLE ai_msgs ADD COLUMN msg_id INTEGER')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_ai_msgs_peer ON ai_msgs(peer_id, date)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_ai_promises_peer_status '
+                        'ON ai_promises(peer_id, status, created_at)')
             cur.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_msgs_peer_msg '
                 'ON ai_msgs(peer_id, msg_id) WHERE msg_id IS NOT NULL'
@@ -491,6 +516,92 @@ class Storage:
                 )
             rows = list(reversed(cur.fetchall()))
             return [dict(r) for r in rows]
+
+    # ─── Обещания: открытые записи живут в БД и переживают перезапуск ───
+
+    def save_ai_promises(self, peer_id, items):
+        """Добавить обещания; дубли по тексту/source_msg_id игнорируются."""
+        try:
+            peer = int(peer_id)
+        except (TypeError, ValueError):
+            return 0
+        now = int(time.time())
+        added = 0
+        with self.lock:
+            cur = self.conn.cursor()
+            known = {(row[0], row[1]) for row in cur.execute(
+                'SELECT text, source_msg_id FROM ai_promises WHERE peer_id = ?',
+                (peer,)).fetchall()}
+            for item in items or ():
+                if not isinstance(item, dict):
+                    continue
+                text = ' '.join(str(item.get('text') or '').split())[:1000]
+                if not text:
+                    continue
+                raw_src = item.get('source_msg_id')
+                try:
+                    src = int(raw_src) if raw_src not in (None, '') else None
+                except (TypeError, ValueError):
+                    src = None
+                if (text, src) in known:
+                    continue
+                raw_promiser = item.get('promiser_id')
+                try:
+                    promiser = int(raw_promiser) if raw_promiser not in (None, '') else None
+                except (TypeError, ValueError):
+                    promiser = None
+                cur.execute(
+                    "INSERT INTO ai_promises "
+                    "(peer_id, promiser_id, who_label, source_msg_id, text, due_at, "
+                    "status, created_at, last_checked_at, note) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+                    (peer, promiser,
+                     ' '.join(str(item.get('who_label') or '').split())[:120],
+                     src, text,
+                     ' '.join(str(item.get('due_at') or '').split())[:120],
+                     now, now,
+                     ' '.join(str(item.get('note') or '').split())[:300]))
+                known.add((text, src))
+                added += 1
+            self.conn.commit()
+        return added
+
+    def get_ai_promises(self, peer_id=None, status='open', limit=100):
+        """status=None — все записи, включая архив (никогда не удаляются)."""
+        with self.lock:
+            cur = self.conn.cursor()
+            where, args = [], []
+            if peer_id is not None:
+                where.append('peer_id = ?')
+                args.append(int(peer_id))
+            if status is not None:
+                where.append('status = ?')
+                args.append(status)
+            sql = 'SELECT * FROM ai_promises'
+            if where:
+                sql += ' WHERE ' + ' AND '.join(where)
+            sql += (" ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, "
+                    'id DESC LIMIT ?')
+            args.append(int(limit))
+            return [dict(r) for r in cur.execute(sql, args).fetchall()]
+
+    def mark_ai_promise(self, promise_id, status, note=''):
+        """Сменить статус; закрытые строки остаются в архиве."""
+        if status not in ('open', 'done', 'cancelled'):
+            return False
+        try:
+            pid = int(promise_id)
+        except (TypeError, ValueError):
+            return False
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE ai_promises SET status = ?, resolved_at = ?, "
+                "note = CASE WHEN ? = '' THEN note ELSE ? END, last_checked_at = ? "
+                "WHERE id = ?",
+                (status, int(time.time()) if status != 'open' else None,
+                 note or '', note or '', int(time.time()), pid))
+            self.conn.commit()
+            return cur.rowcount > 0
 
     def count_ai_msgs(self, peer_id=None, sender=None):
         with self.lock:

@@ -20,11 +20,30 @@ STRING_SESSION = os.environ.get('STRING_SESSION')
 OWNER_ID_RAW = os.environ.get('OWNER_ID')
 MEDIA_DIR = os.environ.get('MEDIA_DIR', './media')
 
-if not API_ID or not API_HASH:
-    raise ValueError("API_ID и API_HASH обязательны. Укажите их в .env")
-if not OWNER_ID_RAW:
-    raise ValueError("OWNER_ID обязателен. Укажите Telegram ID владельца в .env")
-OWNER_ID = int(OWNER_ID_RAW)
+def validate_config():
+    """Проверка обязательных секретов при запуске, а не при импорте.
+
+    Импорт модулей (тесты, линтеры, генерация документации) не должен
+    падать только из-за отсутствия .env. Настоящий запуск бота вызывает
+    эту функцию до подключения к Telegram.
+    """
+    errors = []
+    if not API_ID or not str(API_ID).strip().isdigit():
+        errors.append('API_ID — числовой ID приложения из my.telegram.org')
+    if not API_HASH or not str(API_HASH).strip():
+        errors.append('API_HASH — hash приложения из my.telegram.org')
+    if not OWNER_ID_RAW or not str(OWNER_ID_RAW).strip().lstrip('-').isdigit():
+        errors.append('OWNER_ID — Telegram ID владельца')
+    if errors:
+        raise ValueError(
+            'Неверная конфигурация. Укажите в .env: ' + '; '.join(errors)
+        )
+
+
+try:
+    OWNER_ID = int(OWNER_ID_RAW) if OWNER_ID_RAW else 0
+except (TypeError, ValueError):
+    OWNER_ID = 0
 
 PROXY = os.environ.get('PROXY')
 PROXY_LIST = [p.strip() for p in os.environ.get('PROXY_LIST', '').split(',') if p.strip()]

@@ -35,7 +35,7 @@ async def save_media_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!save (\S+) (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!save (\S+) (.+)$', func=owner_filter))
 async def save_cmd(e):
 
     k, v = e.pattern_match.group(1), e.pattern_match.group(2)
@@ -44,7 +44,7 @@ async def save_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!get (\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!get (\S+)$', func=owner_filter))
 async def get_cmd(e):
 
     k = e.pattern_match.group(1)
@@ -55,7 +55,7 @@ async def get_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!del (\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!del (\S+)$', func=owner_filter))
 async def del_cmd(e):
 
     k = e.pattern_match.group(1)
@@ -83,7 +83,7 @@ async def list_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!find (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!find (.+)$', func=owner_filter))
 async def find_cmd(e):
 
     query = e.pattern_match.group(1).strip().lower()
@@ -106,7 +106,7 @@ async def find_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!note (\S+)(?: (.+))?$', func=owner_filter))
 async def note_cmd(e):
 
     k = e.pattern_match.group(1)
@@ -122,7 +122,7 @@ async def note_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!getnote (\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!getnote (\S+)$', func=owner_filter))
 async def getnote_cmd(e):
 
     k = e.pattern_match.group(1)
@@ -135,7 +135,7 @@ async def getnote_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!delnote (\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!delnote (\S+)$', func=owner_filter))
 async def delnote_cmd(e):
 
     k = e.pattern_match.group(1)
@@ -162,7 +162,7 @@ async def notes_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!todo (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!todo (.+)$', func=owner_filter))
 async def todo_add_cmd(e):
 
     task = e.pattern_match.group(1).strip()
@@ -192,7 +192,7 @@ async def todos_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!done (\d+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!done (\d+)$', func=owner_filter))
 async def done_cmd(e):
 
     idx = int(e.pattern_match.group(1)) - 1
@@ -206,7 +206,7 @@ async def done_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!undone (\d+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!undone (\d+)$', func=owner_filter))
 async def undone_cmd(e):
 
     idx = int(e.pattern_match.group(1)) - 1
@@ -220,7 +220,7 @@ async def undone_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!deltodo (\d+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!deltodo (\d+)$', func=owner_filter))
 async def deltodo_cmd(e):
 
     idx = int(e.pattern_match.group(1)) - 1

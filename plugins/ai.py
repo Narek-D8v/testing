@@ -25,7 +25,12 @@ from telethon.tl.types import (
 )
 
 from ai_engine import AIEngine, AIError
-from ai_utils import swap_layout, transcript, truncate
+from ai_utils import (
+    compose_card, html_to_plain, md_to_telegram_html, parse_ai_json,
+    render_liar, render_mediation, render_promises, render_reality, render_roles,
+    render_summary, render_vibe, safe_truncate_html, swap_layout, timestamp_label,
+    transcript, transcript_dated, truncate,
+)
 from client import client
 from config import (
     AI_AUTO_COOLDOWN,
@@ -44,6 +49,75 @@ import ui
 
 eng = AIEngine()
 _me_cache = None
+
+# Схемы для структурированных команд — отдельными константами, чтобы не
+# экранировать фигурные скобки внутри f-строк с промптом.
+_VIBE_SCHEMA = '''{
+  "summary": "одна фраза об общем настроении",
+  "scores": {"aggression": 0, "sympathy": 0, "engagement": 0, "trust": 0, "tension": 0},
+  "evidence": [{"signal": "что заметил", "quote": "дословная цитата из переписки", "meaning": "почему это важно"}],
+  "dynamics": [{"stage": "начало/середина/конец", "mood": "настроение на этапе", "why": "из-за чего"}],
+  "triggers": ["что усиливает эмоции"],
+  "red_flags": ["тревожный сигнал"],
+  "advice": "одно конкретное предложение владельцу"
+}'''
+
+_LIAR_SCHEMA = '''{
+  "verdict": "короткий вывод о согласованности слов",
+  "credibility": 0,
+  "summary": "одним предложением, в чём главное расхождение",
+  "contradictions": [
+    {"claim": "суть противоречия", "severity": "высокая|средняя|низкая",
+     "quote_a": "первая дословная цитата", "context_a": "когда/при каких обстоятельствах",
+     "quote_b": "вторая дословная цитата", "context_b": "когда/при каких обстоятельствах",
+     "why": "почему это не сходится", "questions": ["что спросить именно по этому пункту"]}
+  ],
+  "unverified": ["утверждение без подтверждения"],
+  "questions": ["вопрос, который прояснит ситуацию"],
+  "advice": "как действовать владельцу"
+}'''
+
+_PROMISES_SCHEMA = '''{
+  "new": [
+    {"text": "дословное обещание", "who": "я|он(а)|имя участника",
+     "due": "срок из переписки или пустая строка", "note": "контекст одним предложением"}
+  ],
+  "fulfilled": [123],
+  "cancelled": [456],
+  "summary": "одним предложением, что с обещаниями происходит"
+}'''
+
+_MEDIATION_SCHEMA = '''{
+  "diagnosis": "нейтрально: в чём суть напряженности",
+  "common_ground": ["что обоим важно"],
+  "steps": [
+    {"say": "готовая фраза от владельца", "why": "почему она сработает"}
+  ],
+  "boundaries": ["что не обещать и не терпеть"],
+  "questions": ["вопрос для собеседника"],
+  "advice": "короткий итог"
+}'''
+
+_REALITY_SCHEMA = '''{
+  "facts": [{"quote": "дословная цитата", "when": "дата из переписки",
+             "what": "что реально произошло"}],
+  "interpretations": [{"claim": "как это трактуется",
+                       "basis": "на чём основано",
+                       "alternative": "другое объяснение"}],
+  "verdict": "что подтверждено, а что — только интерпретация",
+  "advice": "как не нагнетать дальше"
+}'''
+
+_ROLES_SCHEMA = '''{
+  "participants": [
+    {"user": "имя или ID участника", "summary": "одна фраза о роли в диалоге",
+     "roles": [{"type": "манипулятор (по поведению)|уязвимая сторона|избегающий|инициатор конфликта|контролирующий|миротворец",
+                "confidence": 75,
+                "evidence": ["дословная цитата"], "why": "почему так выглядит"}]}
+  ],
+  "dynamic": "как роли сталкиваются и меняются",
+  "caveats": "где данных не хватает"
+}'''
 
 
 async def _me():
@@ -116,9 +190,11 @@ async def _grab_history(uid, n):
     return db.get_ai_msgs(uid, limit=n)
 
 
-async def _gen(prompt, system=None, image=None):
+async def _gen(prompt, system=None, image=None, json_mode=False):
+    """Запрос к AI. json_mode включает строгий JSON у провайдеров, где он есть."""
     try:
-        return await eng.generate(prompt, system_prompt=system, image_bytes=image)
+        return await eng.generate(
+            prompt, system_prompt=system, image_bytes=image, json_mode=json_mode)
     except AIError:
         raise
     except Exception as ex:
@@ -130,22 +206,54 @@ async def _status(event, text):
     return await respond(event, text, parse_mode=None)
 
 
-async def _finish(msg, text):
-    """Дописать/заменить статус готовым ответом (plain: AI генерирует любые
-    символы, и Markdown Telethon на них падал бы)."""
-    text = truncate(text, 3800)
-    try:
-        if msg:
-            await msg.edit(text, parse_mode=None)
-            return msg
-    except Exception:
-        pass
-    if msg is None:
-        return None
-    try:
-        return await client.send_message(msg.chat_id, text, parse_mode=None)
-    except Exception:
-        return None
+async def _finish(msg, text, parse_mode='html', chat_id=None):
+    """Дописать/заменить статус готовым ответом.
+
+    AI-ответы приходят в безопасном HTML: Telegram не умеет GitHub-разметку
+    (**жирный**, > цитата, * список), а Markdown v1 Telethon падал на
+    произвольных символах из модели. Если HTML всё же отвергнут — отправляем
+    тот же текст без разметки.
+    """
+    text = safe_truncate_html(text, 3800) if parse_mode == 'html' else truncate(text, 3800)
+    plain = html_to_plain(text) if parse_mode == 'html' else text
+    attempts = ((parse_mode, text), (None, plain)) if parse_mode else ((None, plain),)
+    for mode, body in attempts:
+        try:
+            if msg:
+                return await msg.edit(body, parse_mode=mode)
+            if chat_id:
+                # Статус не отправился — ответ всё равно должен дойти до чата.
+                return await client.send_message(chat_id, body, parse_mode=mode)
+            return None
+        except Exception as ex:
+            logger.debug(f'[AI-FORMAT] отправка с parse_mode={mode} не удалась: {ex}')
+            # Статусное сообщение могло быть удалено/запрещено к правке —
+            # последний шанс донести ответ уже новым сообщением.
+            if msg and chat_id:
+                try:
+                    return await client.send_message(chat_id, body, parse_mode=mode)
+                except Exception as ex2:
+                    logger.debug(f'[AI-FORMAT] send_message не удалась: {ex2}')
+    return None
+
+
+def _ai_result(title, answer, provider, renderer=None, meta=''):
+    """Собрать HTML-карточку из ответа модели.
+
+    renderer (render_vibe/render_liar/render_summary) получает разобранный
+    JSON. Если модель не прислала корректный JSON — текст конвертируется
+    из Markdown в HTML, а не показывается сырым.
+    """
+    data = parse_ai_json(answer)
+    body = renderer(data) if renderer and data is not None else ''
+    if not body.strip():
+        body = md_to_telegram_html(answer)
+    return compose_card(title, body, provider, meta)
+
+
+def _ai_plain(answer):
+    """Текст без разметки — для собственных сообщений от имени аккаунта."""
+    return html_to_plain(md_to_telegram_html(answer))
 
 
 def _split_text(text, limit=4000):
@@ -334,7 +442,7 @@ async def ai_private_middleware(event):
             )
             await _send_owner(
                 ui.card('💬 Варианты ответа',
-                        f'Для: {_target_name(sender)}\n\n{truncate(variants, 2500)}',
+                        f'Для: {_target_name(sender)}\n\n{truncate(_ai_plain(variants), 2500)}',
                         footer=f'Провайдер: {prov}')
             )
         except AIError as ex:
@@ -600,13 +708,19 @@ async def summary_cmd(e):
     msg = await _status(e, '⏳ Выжимаю суть...')
     try:
         answer, prov = await _gen(
-            'Сделай TL;DR переписки ровно в 3 предложениях: кто собеседник, о чём речь, '
-            f'куда движется разговор и вывод:\n\n{text}',
-            system='Ты делаешь краткие точные выжимки.',
+            'Сделай TL;DR переписки. Ответь ТОЛЬКО JSON без пояснений и разметки: '
+            '{"who":"кто собеседник","about":"о чём речь",'
+            '"direction":"куда движется разговор","conclusion":"вывод"}. '
+            'Каждое значение — одно короткое предложение:\n\n' + text,
+            system='Ты делаешь краткие точные выжимки. Возвращаешь только валидный JSON.',
+            json_mode=True,
         )
-        await _finish(msg, f'📌 Выжимка · {_target_name(target)}\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result(
+            f'📌 Выжимка · {_target_name(target)}', answer, prov, render_summary,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -622,18 +736,32 @@ async def vibe_cmd(e):
                                 title='Настроение'))
         return
     me = await _me()
+    name = _target_name(target)
     msg = await _status(e, '⏳ Считываю настроение...')
     try:
         answer, prov = await _gen(
-            'Проанализируй настроение собеседника по переписке. Ответь строго по шаблону:\n'
-            '🎯 Агрессия: X%\n❤️ Симпатия: X%\n📊 Вовлечённость: X%\n'
-            '🧠 Общий тон: …\n💡 Совет: …\n\nПереписка:\n'
-            + transcript(hist[-50:], me.id, 150),
-            system='Ты — аналитик эмоций.',
+            f'Проанализируй настроение собеседника {name} по переписке. '
+            'Ответь ТОЛЬКО валидным JSON без пояснений и разметки по схеме:\n'
+            + _VIBE_SCHEMA + '\n'
+            'Правила: scores — целые числа от 0 до 100 (0 = нет признака, '
+            '100 = максимум), не строки и не «высокий». '
+            'Приведи 2-3 доказательства дословными цитатами из переписки — '
+            'не выдумывай цитаты и не пересказывай их своими словами. '
+            'dynamics: 2-3 этапа с изменением настроения. '
+            'triggers и red_flags: по 1-3 коротких пункта или пустые массивы, '
+            'если данных нет. Не делай медицинских выводов. После JSON ничего не пиши.\n\n'
+            'Переписка (Я — владелец, Он(а) — собеседник):\n'
+            + transcript_dated(hist[-60:], me.id, 160),
+            system='Ты — внимательный аналитик эмоций. Возвращаешь только валидный JSON '
+                   'без Markdown и комментариев.',
+            json_mode=True,
         )
-        await _finish(msg, f'🎭 Настроение · {_target_name(target)}\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result(
+            f'🎭 Настроение · {name}', answer, prov, render_vibe,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
     db.bump_stat('cmds')
 
 
@@ -643,24 +771,264 @@ async def liar_cmd(e):
     if not target:
         await respond(e, ui.usage('!liar @ник', title='Поиск противоречий'))
         return
-    hist = await _grab_history(target.id, AI_MAX_HISTORY)
+    hist = await _grab_history(target.id, min(AI_MAX_HISTORY, 150))
     if len(hist) < 2:
         await respond(e, ui.err(f'Мало сообщений ({len(hist)}).', title='Противоречия'))
         return
+    name = _target_name(target)
     me = await _me()
     facts = db.get_ai_facts(target.id)
-    extra = '\nФакты о человеке:\n- ' + '\n- '.join(facts) if facts else ''
+    extra = ('\nИзвестные факты о человеке (сверяй с ними, но не выдавай за цитаты):\n- '
+             + '\n- '.join(facts)) if facts else ''
     msg = await _status(e, '⏳ Ищу противоречия...')
     try:
         answer, prov = await _gen(
-            'Найди противоречия в словах собеседника: что он говорил в разное время, '
-            'что менялось, где расходится с фактами. По каждому пункту дай цитируемую пару. '
-            f'Если противоречий нет — так и скажи.\n\n{transcript(hist[-100:], me.id, 150)}{extra}',
-            system='Ты — дотошный детектор противоречий.',
+            f'Найди противоречия в словах собеседника {name}. '
+            'Ответь ТОЛЬКО валидным JSON без разметки по схеме:\n'
+            + _LIAR_SCHEMA + '\n'
+            'Правила: цитаты — дословно из переписки, с датой в контексте; '
+            'не придумывай ни цитат, ни дат. Максимум 5 самых сильных противоречий, '
+            'у каждого — severity и короткие вопросы. '
+            'credibility — целое число 0..100: насколько согласованы слова человека. '
+            'Если данных мало или contradictions пуст — всё равно верни verdict, '
+            'заполни unverified и questions. Различай «противоречие» и «просто '
+            'изменил решение»: второе помечай как низкую severity. '
+            'После JSON ничего не пиши.\n\n'
+            'Переписка с датами (Я — владелец, Он(а) — собеседник):\n'
+            + transcript_dated(hist[-120:], me.id, 170) + extra,
+            system='Ты — дотошный, но fairness-ориентированный детектор противоречий. '
+                   'Возвращаешь только валидный JSON.',
+            json_mode=True,
         )
-        await _finish(msg, f'🕵️ Противоречия · {_target_name(target)}\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result(
+            f'🕵️ Противоречия · {name}', answer, prov, render_liar,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
+    db.bump_stat('cmds')
+
+
+@client.on(events.NewMessage(pattern=r'!promises(?:\s+(all|done|@\w+|-?\d+))?(?:\s+(\d+))?$', func=owner_filter))
+async def promises_cmd(e):
+    arg, arg2 = e.pattern_match.group(1), e.pattern_match.group(2)
+    if arg == 'done' and arg2:
+        ok = db.mark_ai_promise(arg2, 'done', note='закрыто вручную')
+        result = (ui.ok(f'Обещание #{arg2} закрыто.', title='Обещания') if ok else
+                  ui.err(f'Обещание #{arg2} не найдено.', title='Обещания'))
+        await respond(e, result)
+        db.bump_stat('cmds')
+        return
+    if arg == 'all':
+        rows = db.get_ai_promises(status=None, limit=100)
+        body = render_promises(rows, summary='Архив обещаний', show_status=True)
+        await respond(e, compose_card('📜 Обещания · архив', body,
+                                      meta=f'{len(rows)} записей'), parse_mode='html')
+        db.bump_stat('cmds')
+        return
+    target = await _resolve_target(e, arg if arg not in ('all', 'done') else None)
+    if not target:
+        await respond(e, ui.usage(
+            '!promises @ник | !promises done <id> | !promises all',
+            title='Обещания'))
+        return
+    hist = await _grab_history(target.id, 150)
+    if len(hist) < 2:
+        await respond(e, ui.err(f'Мало сообщений ({len(hist)}).', title='Обещания'))
+        return
+    name, me = _target_name(target), await _me()
+    open_rows = db.get_ai_promises(target.id, status='open', limit=100)
+    tracking = '\n'.join(
+        f'#{r["id"]} [{r["who_label"] or "?"}] {r["text"]} '
+        f'(срок: {r["due_at"] or "не указан"})' for r in open_rows) or 'нет'
+    msg = await _status(e, '⏳ Проверяю обещания...')
+    try:
+        answer, prov = await _gen(
+            f'Проверь обещания в переписке с {name}. Ответь ТОЛЬКО валидным JSON по схеме:\n'
+            + _PROMISES_SCHEMA + '\n'
+            'Правила: new — только реально новые обещания дословно; who — "я", '
+            'если обещал владелец, иначе имя собеседника; fulfilled/cancelled — '
+            'id из списка отслеживаемых и только при явном подтверждении в '
+            'переписке. Не выдумывай id и цитаты. Нет подтверждения — не закрывай. '
+            'После JSON ничего не пиши.\n\n'
+            f'Уже отслеживаемые открытые обещания:\n{tracking}\n\n'
+            'Переписка с датами:\n' + transcript_dated(hist[-120:], me.id, 170),
+            system='Ты — аккуратный аудитор обещаний. Возвращаешь только валидный JSON.',
+            json_mode=True,
+        )
+        parsed = parse_ai_json(answer)
+        data = parsed if isinstance(parsed, dict) else {}
+        new_items = []
+        for item in data.get('new') or []:
+            if not isinstance(item, dict):
+                continue
+            who = str(item.get('who') or '').strip().lower()
+            promiser = me.id if who in ('я', 'владелец', 'owner', 'вы') else target.id
+            new_items.append({
+                'text': item.get('text') or '',
+                'who_label': 'вы' if promiser == me.id else name,
+                'promiser_id': promiser,
+                'due_at': item.get('due') or '',
+                'note': item.get('note') or '',
+            })
+        added = db.save_ai_promises(target.id, new_items)
+        for pid in data.get('fulfilled') or []:
+            db.mark_ai_promise(pid, 'done', note='подтверждено в переписке')
+        for pid in data.get('cancelled') or []:
+            db.mark_ai_promise(pid, 'cancelled', note='снято в переписке')
+        rows = db.get_ai_promises(target.id, status='open', limit=100)
+        body = render_promises(rows, summary=data.get('summary') or '')
+        await _finish(msg, compose_card(
+            f'📜 Обещания · {name}', body, prov,
+            meta=f'{len(rows)} открытых · +{added} новых · {len(hist)} сообщений'),
+            chat_id=e.chat_id)
+    except AIError as ex:
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
+    db.bump_stat('cmds')
+
+
+@client.on(events.NewMessage(pattern=r'!mediation(?:\s+(@\w+|-?\d+))?(?:\s+(мягко|жёстко))?$', func=owner_filter))
+async def mediation_cmd(e):
+    mention, tone = e.pattern_match.group(1), e.pattern_match.group(2)
+    target = await _resolve_target(e, mention)
+    if not target:
+        await respond(e, ui.usage('!mediation @ник [мягко|жёстко]', title='Примирение'))
+        return
+    hist = await _grab_history(target.id, 100)
+    if len(hist) < 3:
+        await respond(e, ui.err(f'Мало сообщений ({len(hist)}).', title='Примирение'))
+        return
+    name, me = _target_name(target), await _me()
+    facts = db.get_ai_facts(target.id)
+    extra = ('\nФакты о человеке:\n- ' + '\n- '.join(facts)) if facts else ''
+    open_rows = db.get_ai_promises(target.id, status='open', limit=20)
+    if open_rows:
+        extra += '\nНевыполненные обещания:\n- ' + '\n- '.join(
+            r['text'] for r in open_rows)
+    msg = await _status(e, '⏳ Готовлю план примирения...')
+    try:
+        answer, prov = await _gen(
+            f'Помоги владельцу безопасно помириться с {name}. Стиль: {tone or "мягко"}. '
+            'Ответь ТОЛЬКО валидным JSON по схеме:\n' + _MEDIATION_SCHEMA + '\n'
+            'Правила: diagnosis — нейтрально, без ярлыков; steps — 2-4 конкретных '
+            'фразы от владельца; boundaries — что не обещать; не предлагай '
+            'манипуляций, давления и клинических диагнозов. После JSON ничего не пиши.\n\n'
+            'Переписка с датами:\n' + transcript_dated(hist[-80:], me.id, 170) + extra,
+            system='Ты помогаешь спокойно договориться. Не диагностируй и не подталкивай к давлению. Возвращаешь только валидный JSON.',
+            json_mode=True,
+        )
+        await _finish(msg, _ai_result(
+            f'🕊 Примирение · {name}', answer, prov, render_mediation,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
+    except AIError as ex:
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
+    db.bump_stat('cmds')
+
+
+@client.on(events.NewMessage(pattern=r'!reality(?:\s+(@\w+|-?\d+))?$', func=owner_filter))
+async def reality_cmd(e):
+    target = await _resolve_target(e, e.pattern_match.group(1))
+    if not target:
+        await respond(e, ui.usage('!reality @ник', title='Факты и трактовки'))
+        return
+    hist = await _grab_history(target.id, 100)
+    if len(hist) < 3:
+        await respond(e, ui.err(f'Мало сообщений ({len(hist)}).', title='Факты'))
+        return
+    name, me = _target_name(target), await _me()
+    msg = await _status(e, '⏳ Отделяю факты от догадок...')
+    try:
+        answer, prov = await _gen(
+            f'Разбери переписку с {name} и отдели подтверждённые факты от '
+            'интерпретаций. Ответь ТОЛЬКО валидным JSON по схеме:\n'
+            + _REALITY_SCHEMA + '\n'
+            'Правила: facts — только дословные цитаты с датами; interpretations — '
+            'что человек мог иметь в виду и какое есть альтернативное объяснение. '
+            'Не выдумывай цитаты и не объявляй интерпретацию фактом. После JSON '
+            'ничего не пиши.\n\nПереписка:\n'
+            + transcript_dated(hist[-100:], me.id, 170),
+            system='Ты отделяешь наблюдаемое от домыслов. Возвращаешь только валидный JSON.',
+            json_mode=True,
+        )
+        await _finish(msg, _ai_result(
+            f'⚖️ Факты и трактовки · {name}', answer, prov, render_reality,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
+    except AIError as ex:
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
+    db.bump_stat('cmds')
+
+
+@client.on(events.NewMessage(pattern=r'!roles(?:\s+(@\w+|-?\d+))?$', func=owner_filter))
+async def roles_cmd(e):
+    mention = e.pattern_match.group(1)
+    if mention:
+        target = await resolve_peer(mention)
+    elif e.reply_to_msg_id:
+        replied = await e.get_reply_message()
+        target = (await resolve_peer(str(replied.sender_id))
+                  if replied and replied.sender_id else None)
+    else:
+        target = await e.get_chat()
+    if not target:
+        await respond(e, ui.usage('!roles @ник|ID|чат', title='Роли в чате'))
+        return
+    hist = await _grab_history(target.id, 150)
+    if len(hist) < 5:
+        await respond(e, ui.err(f'Мало сообщений ({len(hist)}).', title='Роли'))
+        return
+    me = await _me()
+    counts = {}
+    for m in hist:
+        sid = m.get('sender_id')
+        if sid is not None:
+            counts[sid] = counts.get(sid, 0) + 1
+    top = sorted(counts, key=counts.get, reverse=True)[:6]
+    labels = {}
+    for sid in top:
+        if sid == me.id:
+            labels[sid] = 'вы'
+        elif sid == target.id:
+            labels[sid] = _target_name(target)
+        else:
+            try:
+                labels[sid] = _target_name(await client.get_entity(sid))
+            except Exception:
+                labels[sid] = str(sid)
+    roster = '\n'.join(f'{labels[s]} — {counts[s]} сообщений' for s in top)
+    lines = []
+    for m in hist[-120:]:
+        text = truncate((m.get('text') or '').strip(), 170)
+        if not text:
+            continue
+        stamp = timestamp_label(m.get('date'))
+        prefix = f'{stamp} ' if stamp else ''
+        lines.append(f'[{prefix}{labels.get(m.get("sender_id"), "?")}] {text}')
+    msg = await _status(e, '⏳ Определяю роли...')
+    try:
+        answer, prov = await _gen(
+            'Определи поведенческие роли участников переписки. Ответь ТОЛЬКО '
+            'валидным JSON по схеме:\n' + _ROLES_SCHEMA + '\n'
+            'Правила: оцени ВСЕХ участников из списка, включая "вы". confidence — '
+            'целое 0..100, высокие значения только при цитатах-доказательствах; '
+            'без цитат — не выше 40. Не используй клинические диагнозы и не '
+            'называй кого-то «жертвой» как факт — описывай поведение в переписке. '
+            'Не придумывай цитаты. После JSON ничего не пиши.\n\n'
+            'Участники:\n' + roster + '\n\nПереписка:\n' + '\n'.join(lines),
+            system='Ты анализируешь поведение в переписке. Это не диагноз и не моральный приговор. Возвращаешь только валидный JSON.',
+            json_mode=True,
+        )
+        data = parse_ai_json(answer)
+        body = render_roles(data, samples=len(hist)) if isinstance(data, dict) else ''
+        if not body.strip():
+            body = md_to_telegram_html(answer)
+        await _finish(msg, compose_card(
+            f'🎭 Роли · {_target_name(target)}', body, prov,
+            meta=f'{len(hist)} сообщений'),
+            chat_id=e.chat_id)
+    except AIError as ex:
+        await _finish(msg, f'❌ {ex}', parse_mode=None, chat_id=e.chat_id)
     db.bump_stat('cmds')
 
 
@@ -688,9 +1056,9 @@ async def sync_cmd(e):
             if saved % 50 == 0:
                 await asyncio.sleep(0.2)
     except Exception as ex:
-        await _finish(msg, f'❌ Не удалось синхронизировать: {ex}')
+        await _finish(msg, f'❌ Не удалось синхронизировать: {ex}', parse_mode=None)
         return
-    await _finish(msg, f'✅ Синхронизировано: {saved} сообщений с {_target_name(target)}.')
+    await _finish(msg, f'✅ Синхронизировано: {saved} сообщений с {_target_name(target)}.', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -768,9 +1136,9 @@ async def rewrite_cmd(e):
             f'Верни только готовый текст:\n\n{truncate(text, 2000)}',
             system='Ты — редактор текста.',
         )
-        await _finish(msg, f'✍️ Переписано · {style}\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result(f'✍️ Переписано · {style}', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -792,9 +1160,9 @@ async def fix_cmd(e):
             f'Верни только исправленный текст:\n\n{truncate(swapped, 2000)}',
             system='Ты — редактор: верни только итоговый текст без объяснений.',
         )
-        await _finish(msg, f'🔧 Исправлено\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result('🔧 Исправлено', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -811,9 +1179,9 @@ async def factcheck_cmd(e):
             f'как проверить. Ответь кратко:\n\n{truncate(text, 2500)}',
             system='Ты — фактчекер. Подчёркивай степень уверенности каждого пункта.',
         )
-        await _finish(msg, f'🔍 Фактчек\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result('🔍 Фактчек', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -830,9 +1198,9 @@ async def args_cmd(e):
             f'Нумеруй:\n\n{truncate(text, 2000)}',
             system='Ты — мастер дебатов.',
         )
-        await _finish(msg, f'⚔️ Контраргументы\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result('⚔️ Контраргументы', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -850,9 +1218,9 @@ async def tr_cmd(e):
             f'{truncate(text, 2500)}',
             system='Ты — профессиональный переводчик.',
         )
-        await _finish(msg, f'🌐 Перевод · {lang}\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result(f'🌐 Перевод · {lang}', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     db.bump_stat('cmds')
 
 
@@ -876,17 +1244,17 @@ async def ocr_cmd(e):
     try:
         downloaded = await replied.download_media(file=path)
         if not downloaded:
-            await _finish(msg, '❌ Не удалось скачать картинку.')
+            await _finish(msg, '❌ Не удалось скачать картинку.', parse_mode=None)
             return
         try:
             size = os.path.getsize(downloaded)
             if size > 15 * 1024 * 1024:
-                await _finish(msg, '❌ Картинка больше 15 МБ.')
+                await _finish(msg, '❌ Картинка больше 15 МБ.', parse_mode=None)
                 return
             with open(downloaded, 'rb') as f:
                 image = f.read()
         except OSError as ex:
-            await _finish(msg, f'❌ Ошибка чтения файла: {ex}')
+            await _finish(msg, f'❌ Ошибка чтения файла: {ex}', parse_mode=None)
             return
         answer, prov = await _gen(
             'Распознай весь текст с изображения. Если текста нет — так и напиши. '
@@ -894,12 +1262,12 @@ async def ocr_cmd(e):
             system='Ты — OCR-движок.',
             image=image,
         )
-        await _finish(msg, f'📄 Распознанный текст\n\n{answer}\n\n[{prov}]')
+        await _finish(msg, _ai_result('📄 Распознанный текст', answer, prov))
     except AIError as ex:
-        await _finish(msg, f'❌ {ex}')
+        await _finish(msg, f'❌ {ex}', parse_mode=None)
     except Exception as ex:
         logger.warning(f'ocr: {ex}')
-        await _finish(msg, f'❌ Ошибка OCR: {ex}')
+        await _finish(msg, f'❌ Ошибка OCR: {ex}', parse_mode=None)
     finally:
         for p in (path, downloaded):
             try:
@@ -929,11 +1297,11 @@ async def tts_cmd(e):
         try:
             import edge_tts
         except ImportError:
-            await _finish(msg, '❌ edge-tts не установлен: `pip install edge-tts`')
+            await _finish(msg, '❌ edge-tts не установлен: `pip install edge-tts`', parse_mode=None)
             return
         await edge_tts.Communicate(text, AI_TTS_VOICE).save(mp3)
         if not os.path.exists(mp3):
-            await _finish(msg, '❌ Не удалось синтезировать голос.')
+            await _finish(msg, '❌ Не удалось синтезировать голос.', parse_mode=None)
             return
         ffmpeg = shutil.which('ffmpeg')
         voice = False
@@ -955,7 +1323,7 @@ async def tts_cmd(e):
         logger.info(f'🎙 AI TTS → {e.chat_id}')
     except Exception as ex:
         logger.warning(f'tts: {ex}')
-        await _finish(msg, f'❌ Ошибка TTS: {ex}')
+        await _finish(msg, f'❌ Ошибка TTS: {ex}', parse_mode=None)
     finally:
         for p in (mp3, ogg):
             try:
@@ -988,7 +1356,7 @@ async def circle_cmd(e):
     try:
         downloaded = await replied.download_media(file=src)
         if not downloaded:
-            await _finish(msg, '❌ Не удалось скачать медиа.')
+            await _finish(msg, '❌ Не удалось скачать медиа.', parse_mode=None)
             return
         base = [ffmpeg, '-y', '-t', '60', '-i', downloaded,
                 '-vf', "crop='min(iw,ih)':min(iw,ih),scale=512:512,setsar=1",
@@ -1015,7 +1383,7 @@ async def circle_cmd(e):
             except OSError:
                 pass
         if not ok:
-            await _finish(msg, f'❌ Конвертация не удалась: {last_err}')
+            await _finish(msg, f'❌ Конвертация не удалась: {last_err}', parse_mode=None)
             return
         await client.send_file(e.chat_id, out, video_note=True, reply_to=getattr(msg, 'id', None))
         try:
@@ -1024,7 +1392,7 @@ async def circle_cmd(e):
             pass
     except Exception as ex:
         logger.warning(f'circle: {ex}')
-        await _finish(msg, f'❌ Ошибка: {ex}')
+        await _finish(msg, f'❌ Ошибка: {ex}', parse_mode=None)
     finally:
         for p in (src, out, downloaded):
             try:
@@ -1092,7 +1460,8 @@ async def style_on_cmd(e):
     db.set_state('ai_style_src', str(src.id))
     db.set_state('ai_style_n', str(n))
     await _finish(msg, f'🎨 Стиль: {_target_name(src)}, последние {n} сообщений '
-                      f'(собрано {saved}). Автоответчики копируют эту манеру.')
+                      f'(собрано {saved}). Автоответчики копируют эту манеру.',
+                  parse_mode=None)
     db.bump_stat('cmds')
 
 

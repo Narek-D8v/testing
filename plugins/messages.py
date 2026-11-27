@@ -24,7 +24,7 @@ from telethon.tl.types import (
 )
 
 
-@client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!type(?:\s+(fast|slow|matrix|glitch))?\s+(.+)$', func=owner_filter))
 async def type_cmd(e):
 
     mode = e.pattern_match.group(1) or 'normal'
@@ -78,7 +78,7 @@ async def type_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!echo (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!echo (.+)$', func=owner_filter))
 async def echo_cmd(e):
 
     await e.delete()
@@ -86,7 +86,7 @@ async def echo_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!bold (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!bold (.+)$', func=owner_filter))
 async def bold_cmd(e):
 
     await e.delete()
@@ -94,7 +94,7 @@ async def bold_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!italic (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!italic (.+)$', func=owner_filter))
 async def italic_cmd(e):
 
     await e.delete()
@@ -102,7 +102,7 @@ async def italic_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!mono (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!mono (.+)$', func=owner_filter))
 async def mono_cmd(e):
 
     await e.delete()
@@ -144,7 +144,7 @@ async def purge_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!spam (\d+) (.+)$', func=owner_filter))
 async def spam_cmd(e):
 
     count, text = int(e.pattern_match.group(1)), e.pattern_match.group(2).strip()
@@ -217,7 +217,7 @@ async def unpin_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!copyall\s+(\d+)\s+(\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!copyall\s+(\d+)\s+(\S+)$', func=owner_filter))
 async def copyall_cmd(e):
 
     text, _ = normalize_command_text(e)
@@ -481,7 +481,7 @@ async def write_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!react (.+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!react (.+)$', func=owner_filter))
 async def react_cmd(e):
 
     if not e.reply_to_msg_id:

@@ -1,1 +1,26 @@
+# Секреты и сессии — никогда не коммитить
+.env
+.env.*
+!.env.example
+cookies.txt
+cookies.txt.*
+*.session
+*.session.*
+my_userbot.session*
+bot.lock
+
+# Локальные данные бота
+userbot.db
+userbot.db-*
+media/
+
+# Python / окружение
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Логи и бинарники сборки
+*.log
 ffmpeg

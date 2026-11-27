@@ -148,7 +148,7 @@ async def autodel_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!delay\s+(\d+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!delay\s+(\d+)$', func=owner_filter))
 async def delay_cmd(e):
 
     sec = int(e.pattern_match.group(1))

@@ -150,7 +150,7 @@ async def pmwatch_cmd(e):
     db.bump_stat('cmds')
 
 
-@client.on(events.NewMessage(pattern=r'!check_email\s+(\S+)', func=owner_filter))
+@client.on(events.NewMessage(pattern=r'!check_email\s+(\S+)$', func=owner_filter))
 async def check_email_cmd(e):
 
     email = e.pattern_match.group(1).strip().lower()
